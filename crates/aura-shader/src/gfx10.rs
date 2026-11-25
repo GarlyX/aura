@@ -152,6 +152,7 @@ impl Inst {
             Encoding::Sopp => SOPP,
             Encoding::Sop1 => SOP1,
             Encoding::Sop2 => SOP2,
+            Encoding::Sopk => SOPK,
             Encoding::Smem => SMEM,
             Encoding::Ds => DS,
             Encoding::Exp => return Some("exp"),
@@ -337,7 +338,18 @@ const SOPP: &[(u16, &str)] = &[
 const SOP1: &[(u16, &str)] = &[
     (0x03, "s_mov_b32"),
     (0x04, "s_mov_b64"),
+    (0x1f, "s_getpc_b64"),
+    (0x20, "s_setpc_b64"),
+    (0x21, "s_swappc_b64"),
+    (0x22, "s_rfe_b64"),
     (0x24, "s_and_saveexec_b64"),
+];
+
+const SOPK: &[(u16, &str)] = &[
+    (0x15, "s_setreg_imm32_b32"),
+    (0x16, "s_call_b64"),
+    (0x1b, "s_subvector_loop_begin"),
+    (0x1c, "s_subvector_loop_end"),
 ];
 
 const SOP2: &[(u16, &str)] = &[
