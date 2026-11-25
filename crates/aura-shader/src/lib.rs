@@ -5,6 +5,7 @@ pub mod abi;
 pub mod cfg;
 pub mod gfx10;
 pub mod gsout;
+pub mod hlsl;
 pub mod lanes;
 pub mod operands;
 pub mod ssa;
