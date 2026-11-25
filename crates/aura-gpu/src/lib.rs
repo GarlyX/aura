@@ -2,4 +2,6 @@
 //! See docs/architecture.md.
 
 #[cfg(windows)]
+pub mod titlemem;
+#[cfg(windows)]
 pub mod watch;

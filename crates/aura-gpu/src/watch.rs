@@ -21,6 +21,61 @@ use windows_sys::Win32::System::Memory::{
 };
 use windows_sys::Win32::System::SystemServices::MEM_WRITE_WATCH;
 
+/// Pages of `[base, base + size)` written since the last reset, merged where
+/// written pages touch. Shared by [`Watch`] and the title-memory views in
+/// `titlemem`. `None` means the OS call failed; callers then know nothing
+/// and must fall back to hashing.
+///
+/// The scratch array has one slot per page of the region, so a concurrent
+/// writer cannot overflow it: there is a slot for every page it could
+/// possibly dirty.
+pub(crate) fn collect_writes(base: *const u8, size: usize) -> Option<Vec<Range<usize>>> {
+    let page = page_size();
+    let mut pages = vec![std::ptr::null_mut::<u8>(); size.div_ceil(page)];
+    let mut count = pages.len();
+    let mut gran = 0u32;
+    // SAFETY: `pages` has room for `count` addresses and the caller promises
+    // the region is live for the call.
+    let rc = unsafe {
+        GetWriteWatch(
+            0,
+            base.cast(),
+            size,
+            pages.as_mut_ptr().cast(),
+            &mut count,
+            &mut gran,
+        )
+    };
+    if rc != 0 {
+        tracing::warn!(error = unsafe { GetLastError() }, "GetWriteWatch failed");
+        return None;
+    }
+    pages.truncate(count);
+    pages.sort_unstable();
+    pages.dedup();
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for p in pages {
+        let start = p as usize - base as usize;
+        let end = (start + page).min(size);
+        match ranges.last_mut() {
+            Some(last) if start <= last.end => last.end = last.end.max(end),
+            _ => ranges.push(start..end),
+        }
+    }
+    Some(ranges)
+}
+
+pub(crate) fn page_size() -> usize {
+    use std::sync::OnceLock;
+    static PAGE: OnceLock<usize> = OnceLock::new();
+    *PAGE.get_or_init(|| {
+        let mut info = windows_sys::Win32::System::SystemInformation::SYSTEM_INFO::default();
+        // SAFETY: the out pointer is valid.
+        unsafe { windows_sys::Win32::System::SystemInformation::GetSystemInfo(&mut info) };
+        info.dwPageSize as usize
+    })
+}
+
 /// A committed region with OS write tracking.
 ///
 /// Dropping it frees the region. The pointer handed out by [`Watch::ptr`]
@@ -71,45 +126,11 @@ impl Watch {
     }
 
     /// Ranges (offsets into the region) written since the last reset,
-    /// merged where written pages touch.
-    ///
-    /// The scratch array has one slot per page of the region, so a
-    /// concurrent writer cannot overflow it: there is a slot for every page
-    /// it could possibly dirty.
+    /// merged where written pages touch. Empty on OS failure: a `Watch`
+    /// exists only for tracking, so a failed query degrades to "no writes",
+    /// which the caller treats as "nothing to upload this frame".
     pub fn writes(&self) -> Vec<Range<usize>> {
-        let page = page_size();
-        let mut pages = vec![std::ptr::null_mut::<u8>(); self.size.div_ceil(page)];
-        let mut count = pages.len();
-        let mut gran = 0u32;
-        // SAFETY: `pages` has room for `count` addresses and the region is
-        // live for the call.
-        let rc = unsafe {
-            GetWriteWatch(
-                0,
-                self.base.cast(),
-                self.size,
-                pages.as_mut_ptr().cast(),
-                &mut count,
-                &mut gran,
-            )
-        };
-        if rc != 0 {
-            tracing::warn!(error = unsafe { GetLastError() }, "GetWriteWatch failed");
-            return Vec::new();
-        }
-        pages.truncate(count);
-        pages.sort_unstable();
-        pages.dedup();
-        let mut ranges: Vec<Range<usize>> = Vec::new();
-        for p in pages {
-            let start = p as usize - self.base as usize;
-            let end = (start + page).min(self.size);
-            match ranges.last_mut() {
-                Some(last) if start <= last.end => last.end = last.end.max(end),
-                _ => ranges.push(start..end),
-            }
-        }
-        ranges
+        collect_writes(self.base, self.size).unwrap_or_default()
     }
 
     /// Forgets every write seen so far; tracking continues from now.
@@ -127,17 +148,6 @@ impl Drop for Watch {
         // SAFETY: the region is ours and freed once.
         unsafe { VirtualFree(self.base.cast(), 0, MEM_RELEASE) };
     }
-}
-
-fn page_size() -> usize {
-    use std::sync::OnceLock;
-    static PAGE: OnceLock<usize> = OnceLock::new();
-    *PAGE.get_or_init(|| {
-        let mut info = windows_sys::Win32::System::SystemInformation::SYSTEM_INFO::default();
-        // SAFETY: the out pointer is valid.
-        unsafe { windows_sys::Win32::System::SystemInformation::GetSystemInfo(&mut info) };
-        info.dwPageSize as usize
-    })
 }
 
 #[cfg(test)]
