@@ -5,9 +5,7 @@
 //! instructions, name the encoding and opcode, and give typed access to the
 //! fields the later stages need. It decides lengths exactly, because every
 //! later step walks the code by them and one wrong length misreads
-//! everything after it. Opcode names are kept for the instructions the
-//! geometry-to-mesh translation reasons about (control flow, messages, LDS);
-//! the rest keep their number until a translation step needs a name.
+//! everything after it. Every opcode is named (see `opcodes`).
 //!
 //! The encoding rules come from the public RDNA2 instruction set reference.
 
@@ -146,19 +144,38 @@ pub fn decode_one(code: &[u8], offset: usize) -> Result<Inst, DecodeError> {
 }
 
 impl Inst {
-    /// The opcode's name, for the opcodes this crate names so far.
+    /// The opcode's name.
     pub fn name(&self) -> Option<&'static str> {
-        let table: &[(u16, &str)] = match self.encoding {
-            Encoding::Sopp => SOPP,
-            Encoding::Sop1 => SOP1,
-            Encoding::Sop2 => SOP2,
-            Encoding::Sopk => SOPK,
-            Encoding::Smem => SMEM,
-            Encoding::Ds => DS,
+        use crate::opcodes as t;
+        let (table, op): (&[(u16, &str)], u16) = match self.encoding {
+            Encoding::Sop2 => (t::SOP2, self.opcode),
+            Encoding::Sopk => (t::SOPK, self.opcode),
+            Encoding::Sop1 => (t::SOP1, self.opcode),
+            Encoding::Sopc => (t::SOPC, self.opcode),
+            Encoding::Sopp => (t::SOPP, self.opcode),
+            Encoding::Smem => (t::SMEM, self.opcode),
+            Encoding::Vop2 => (t::VOP2, self.opcode),
+            Encoding::Vop1 => (t::VOP1, self.opcode),
+            Encoding::Vopc => (t::VOPC, self.opcode),
+            // VOP3 also encodes the VOPC, VOP2 and VOP1 opcodes at fixed bases.
+            Encoding::Vop3 => match self.opcode {
+                0x000..0x100 => (t::VOPC, self.opcode),
+                0x100..0x140 => (t::VOP2, self.opcode - 0x100),
+                0x180..0x200 => (t::VOP1, self.opcode - 0x180),
+                _ => (t::VOP3, self.opcode),
+            },
+            Encoding::Vop3p => (t::VOP3P, self.opcode),
+            Encoding::Vintrp => (t::VINTRP, self.opcode),
+            Encoding::Ds => (t::DS, self.opcode),
+            Encoding::Mubuf => (t::MUBUF, self.opcode),
+            Encoding::Mtbuf => (t::MTBUF, self.opcode),
+            Encoding::Mimg => (t::MIMG, self.opcode),
             Encoding::Exp => return Some("exp"),
-            _ => return None,
+            Encoding::Flat => (t::FLAT, self.opcode),
+            Encoding::Global => (t::GLOBAL, self.opcode),
+            Encoding::Scratch => (t::SCRATCH, self.opcode),
         };
-        table.iter().find(|(op, _)| *op == self.opcode).map(|(_, n)| *n)
+        table.binary_search_by_key(&op, |&(o, _)| o).ok().map(|i| table[i].1)
     }
 
     /// The 16-bit immediate of a SOPP or SOPK instruction.
@@ -299,97 +316,6 @@ pub struct Smem {
     pub offset: i32,
     pub soffset: u8,
 }
-
-const SOPP: &[(u16, &str)] = &[
-    (0x00, "s_nop"),
-    (0x01, "s_endpgm"),
-    (0x02, "s_branch"),
-    (0x03, "s_wakeup"),
-    (0x04, "s_cbranch_scc0"),
-    (0x05, "s_cbranch_scc1"),
-    (0x06, "s_cbranch_vccz"),
-    (0x07, "s_cbranch_vccnz"),
-    (0x08, "s_cbranch_execz"),
-    (0x09, "s_cbranch_execnz"),
-    (0x0a, "s_barrier"),
-    (0x0b, "s_setkill"),
-    (0x0c, "s_waitcnt"),
-    (0x0d, "s_sethalt"),
-    (0x0e, "s_sleep"),
-    (0x0f, "s_setprio"),
-    (0x10, "s_sendmsg"),
-    (0x11, "s_sendmsghalt"),
-    (0x12, "s_trap"),
-    (0x13, "s_icache_inv"),
-    (0x14, "s_incperflevel"),
-    (0x15, "s_decperflevel"),
-    (0x16, "s_ttracedata"),
-    (0x1b, "s_endpgm_saved"),
-    (0x1e, "s_endpgm_ordered_ps_done"),
-    (0x1f, "s_code_end"),
-    (0x20, "s_inst_prefetch"),
-    (0x21, "s_clause"),
-    (0x22, "s_wait_idle"),
-    (0x23, "s_waitcnt_depctr"),
-    (0x24, "s_round_mode"),
-    (0x25, "s_denorm_mode"),
-];
-
-const SOP1: &[(u16, &str)] = &[
-    (0x03, "s_mov_b32"),
-    (0x04, "s_mov_b64"),
-    (0x1f, "s_getpc_b64"),
-    (0x20, "s_setpc_b64"),
-    (0x21, "s_swappc_b64"),
-    (0x22, "s_rfe_b64"),
-    (0x24, "s_and_saveexec_b64"),
-];
-
-const SOPK: &[(u16, &str)] = &[
-    (0x15, "s_setreg_imm32_b32"),
-    (0x16, "s_call_b64"),
-    (0x1b, "s_subvector_loop_begin"),
-    (0x1c, "s_subvector_loop_end"),
-];
-
-const SOP2: &[(u16, &str)] = &[
-    (0x00, "s_add_u32"),
-    (0x0e, "s_and_b32"),
-    (0x20, "s_lshr_b32"),
-    (0x25, "s_bfm_b64"),
-    (0x27, "s_bfe_u32"),
-];
-
-const SMEM: &[(u16, &str)] = &[
-    (0x00, "s_load_dword"),
-    (0x01, "s_load_dwordx2"),
-    (0x02, "s_load_dwordx4"),
-    (0x08, "s_buffer_load_dword"),
-];
-
-const DS: &[(u16, &str)] = &[
-    (0x00, "ds_add_u32"),
-    (0x0d, "ds_write_b32"),
-    (0x0e, "ds_write2_b32"),
-    (0x0f, "ds_write2st64_b32"),
-    (0x35, "ds_swizzle_b32"),
-    (0x36, "ds_read_b32"),
-    (0x37, "ds_read2_b32"),
-    (0x38, "ds_read2st64_b32"),
-    (0x3c, "ds_read_u16"),
-    (0x3d, "ds_consume"),
-    (0x3e, "ds_append"),
-    (0x3f, "ds_ordered_count"),
-    (0x4d, "ds_write_b64"),
-    (0x4e, "ds_write2_b64"),
-    (0x76, "ds_read_b64"),
-    (0x77, "ds_read2_b64"),
-    (0xb3, "ds_bpermute_b32"),
-    (0xde, "ds_write_b96"),
-    (0xdf, "ds_write_b128"),
-    (0xfe, "ds_read_b96"),
-    (0xff, "ds_read_b128"),
-];
 
 #[cfg(test)]
 mod tests {
