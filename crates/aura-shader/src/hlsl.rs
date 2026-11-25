@@ -21,9 +21,11 @@
 //! - **Input vertices** come from the earlier stage's output in the
 //!   console's LDS layout (`es_ring`), read at the same byte addresses.
 //! - **Output vertices** are the values each EMIT completed ([`GsProgram`]),
-//!   one triangle per lane. Which dwords form the clip position is decided
-//!   by the console's copy stage, not by this program; until that stage is
-//!   read, dwords 0-3 stand in for it.
+//!   one triangle per lane. The clip position is dwords 0-3 of each vertex:
+//!   the geometry programs that need this translation write x and y clamped
+//!   to [-1, 1] there, z as `0.5 * z + 0.5` and w as the constant 1.0, and
+//!   their containers carry no separate export stage. A program with a
+//!   different layout would need the console's copy stage read instead.
 //!
 //! The SGPRs the wave starts with (system values, the engine prefix, root
 //! arguments) arrive as a constant block, so the program reads them by
