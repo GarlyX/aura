@@ -543,13 +543,15 @@ fn vector(o: &mut Operands, inst: &Inst, name: &str) {
     }
     o.read(Unit::S(EXEC), 2);
     if compare {
-        let mask_dst = match inst.encoding {
-            Encoding::Vopc => VCC as u32,
-            _ => sdst.unwrap_or(VCC as u32),
-        };
-        o.def_sdst(mask_dst, 2);
+        // On this generation v_cmpx writes EXEC only (no VCC or SGPR copy).
         if name.starts_with("v_cmpx") {
             o.def(Unit::S(EXEC), 2);
+        } else {
+            let mask_dst = match inst.encoding {
+                Encoding::Vopc => VCC as u32,
+                _ => sdst.unwrap_or(VCC as u32),
+            };
+            o.def_sdst(mask_dst, 2);
         }
         return;
     }
