@@ -1,7 +1,8 @@
 //! Title memory: one physical allocation seen at two addresses.
 //!
-//! The console the title was built for has unified memory: GPU resources are
-//! ordinary allocations in the title's address space. On the host we must
+//! The console yeni çıkmış bir oyun (the newly released game this layer
+//! runs, called "the title" below) was built for has unified memory: GPU
+//! resources are ordinary allocations in the title's address space. On the host we must
 //! not copy that memory per frame (the reference layer's multi-gigabyte
 //! shadow is what paged the test machine to death). So aura keeps *one*
 //! physical allocation — a pagefile-backed section — and maps it twice:
