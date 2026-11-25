@@ -4,4 +4,5 @@
 pub mod abi;
 pub mod cfg;
 pub mod gfx10;
+pub mod operands;
 mod opcodes;
