@@ -8,5 +8,6 @@ pub mod gsout;
 pub mod hlsl;
 pub mod lanes;
 pub mod operands;
+pub mod resources;
 pub mod ssa;
 mod opcodes;
