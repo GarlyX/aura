@@ -1,2 +1,29 @@
 target/
 *.pdb
+
+# Nothing from the game, and nothing private, is ever committed: the game
+# is the user's own copy and stays outside this repository.
+*.exe
+*.dll
+*.xvd
+*.xvc
+*.msixvc
+*.rpf
+*.ttpf
+*.bin
+*.dat
+*.dmp
+*.bk2
+*.awc
+*.dxil
+*.cso
+saves/
+dumps/
+captures/
+
+# Local settings and secrets (paths, keys, tokens).
+*.toml.local
+aura.toml
+.env
+*.key
+*.pem

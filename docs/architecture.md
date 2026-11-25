@@ -1,70 +1,75 @@
-# aura — architecture
+# aura — mimari
 
-Design targets, in order: **memory footprint**, **frame throughput**,
-correctness. Every subsystem below exists because profiling of a reference
-layer on the test machine (16 GB RAM) showed the title's world frames taking
-0.5–15 s, driven by paging (process at 23–25 GB), synchronous GPU submission,
-and per-request DirectStorage writes into paged memory.
+Tasarım öncelikleri, sırasıyla: **bellek ayak izi**, **kare verimi**,
+doğruluk. Aşağıdaki her alt sistemin nedeni, başvuru katmanının 16 GB RAM'li
+test makinesindeki profilidir: yeni çıkmış oyunun dünya kareleri 0,5–15 sn
+sürüyordu. Nedenleri sayfalama (süreç 23–25 GB), eşzamanlı GPU gönderimi ve
+sayfalanmış belleğe istek başına DirectStorage yazımıydı.
 
-## 1. Title memory is owned, not copied
+## 1. Oyun belleğinin sahibi biziz, kopyası yok
 
-The reference layer keeps a system-memory shadow of GPU resources, hashes it
-to find changes, then uploads. That costs gigabytes of commit and tens of
-milliseconds per frame.
+Başvuru katmanı GPU kaynaklarının sistem belleğinde bir gölgesini tutuyor,
+değişiklikleri bulmak için özetini (hash) çıkarıyor, sonra yüklüyor. Bunun
+bedeli gigabaytlarca commit ve kare başına onlarca milisaniye.
 
-aura instead:
+aura bunun yerine:
 
-- Maps the title's address space as far as the host allows (a graphics heap
-  for buffers and textures where the host GPU accepts the layout; a plain
-  reservation plus targeted upload where it does not).
-- Detects writes with page protection (write-watch) as the *only* change
-  signal; hashing is a fallback for aliased views and is always incremental
-  (a rotating slice per frame, escalating to full scans only for regions that
-  keep changing — e.g. video playback targets).
-- Never keeps a second full-size shadow of a title resource on the CPU side.
+- Oyunun adres alanını host'un izin verdiği ölçüde eşler: host GPU'nun
+  düzeni kabul ettiği arabellek ve dokular için bir grafik heap'i, etmediği
+  yerde düz bir rezervasyon ve hedefli yükleme.
+- Yazmaları yalnızca sayfa korumasıyla (write-watch) algılar. Özet çıkarma,
+  takma adlı görünümler için bir yedektir ve her zaman artımlıdır: her kare
+  dönen bir dilim taranır; sürekli değişen bölgeler (ör. video oynatma
+  hedefleri) duruluncaya kadar tam taramaya yükseltilir.
+- Bir oyun kaynağının CPU tarafında ikinci, tam boy bir gölgesini asla tutmaz.
 
-Budget: the layer's own committed memory stays under ~1 GB plus the D3D12
-heaps it must own.
+Bütçe: katmanın kendi commit'i, sahip olması gereken D3D12 heap'leri dışında
+~1 GB'ın altında kalır.
 
-## 2. Asynchronous GPU submission
+## 2. Eşzamansız GPU gönderimi
 
-Submissions are never waited on by the submitting thread. A relay thread
-retires completed flights and releases their resources. Waits that the title
-requests (fences, memory-value waits) are answered from GPU progress, not by
-polling page tables per call.
+Gönderen iş parçacığı gönderimleri hiç beklemez. Bir aktarma iş parçacığı
+biten uçuşları kapatır ve kaynaklarını bırakır. Oyunun istediği beklemeler
+(fence'ler, bellek değeri beklemeleri) her çağrıda sayfa tablosu yoklanarak
+değil, GPU ilerlemesinden yanıtlanır.
 
-## 3. DirectStorage write path
+## 3. DirectStorage yazım yolu
 
-- Persistent page windows for `PAGE_DESTINATION` requests: mapped once,
-  reused, instead of one fresh view per request.
-- Writes land in committed (non-paged) staging before touching title memory
-  when the working set is under pressure.
-- Decode (zlib/BCPack) parallel across all cores, priorities by weighted
-  round-robin.
+- `PAGE_DESTINATION` istekleri için kalıcı sayfa pencereleri: her istekte yeni
+  bir görünüm yerine bir kez eşlenir, yeniden kullanılır.
+- Çalışma kümesi baskı altındayken yazılar, oyun belleğine dokunmadan önce
+  commit edilmiş (sayfalanmayan) bir ara tampona iner.
+- Çözme (zlib/BCPack) tüm çekirdeklere paralel; öncelikler ağırlıklı
+  round-robin ile.
 
-## 4. Shaders
+## 4. Shader'lar
 
-Console GPU code is translated to DXIL ahead of time where the pipeline
-library allows it, on first use otherwise, and cached on disk. Translation
-failures are counted per pipeline and reported; no draw is silently dropped
-without a statistic naming its shader.
+Konsol GPU kodu, pipeline kütüphanesi izin verdiğinde önceden, vermediğinde
+ilk kullanımda DXIL'e çevrilir ve diske önbelleklenir. Çeviri hataları
+pipeline başına sayılır ve raporlanır; hiçbir draw, shader'ını adlandıran bir
+istatistik olmadan sessizce düşürülmez.
 
-## 5. Clocks
+Bilinen gereksinimler: grafik aşamalarında giriş SGPR ABI'si (kök düzeninin
+dışında okunan SGPR'lar, motorun gizli öneki), konsolun yonga üstü GS
+modelinin mesh shader'a eşlenmesi, kontrol akışıyla seçilen descriptor'lar,
+veri olarak okunan descriptor'lar.
 
-The title reads time through the performance counter. When rendered frames
-run long, the counter shown to the title slows so that one frame never looks
-longer than a configurable cap (default 100 ms); this keeps the title's
-streaming balance intact while the world is slow. The layer's own clock used
-for pacing and presentation is unaffected.
+## 5. Saatler
 
-## 6. Structure
+Oyun zamanı performans sayacından okur. Çizilen kareler uzadığında oyuna
+gösterilen sayaç yavaşlar; böylece bir kare oyuna hiçbir zaman ayarlanabilir
+bir tavandan (varsayılan 100 ms) uzun görünmez. Bu, dünya yavaşken oyunun akış
+(streaming) dengesini korur. Katmanın tempo ve sunum için kullandığı kendi
+saati bundan etkilenmez.
 
-The loader runs the title's x86-64 code unchanged in-process; the HLE crates
-supply the console OS surface underneath it. Import resolution order: our
-module, then a host function if policy allows, then a DLL shipped with the
-title, then a stub that names itself when called.
+## 6. Yapı
 
-## What is deliberately out of scope for now
+Yükleyici, oyunun x86-64 kodunu değiştirmeden süreç içinde çalıştırır; HLE
+crate'leri altındaki konsol işletim sistemi yüzeyini sağlar. İçe aktarma
+çözüm sırası: bizim modülümüz, ilke izin veriyorsa host fonksiyonu, oyunla
+gelen bir DLL, son olarak çağrıldığında adını söyleyen bir taslak.
 
-Ray-traced lighting, HDR output, networked play. The title is offline by
-design.
+## Şimdilik bilerek kapsam dışı
+
+Işın izlemeli aydınlatma, HDR çıkış, ağ üzerinden oyun. Oyun tasarım gereği
+çevrimdışı çalışır.

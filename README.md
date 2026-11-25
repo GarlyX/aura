@@ -1,30 +1,58 @@
 # aura
 
-A compatibility layer that runs an Xbox Series X|S title natively on
-Windows, from files the user supplies. Work in progress; nothing here runs
-the title yet.
+**aura**, yeni çıkmış bir oyunun Xbox Series sürümünü, oyun dosyalarını
+kendin sağlayarak Windows PC'de yerel olarak çalıştırmayı hedefleyen bir
+uyumluluk katmanıdır. Sıfırdan yazılmaktadır.
 
-**This repository contains no game files, code or assets.** You need your own
-copy of the game. It is not affiliated with or endorsed by the game's
-developer or publisher.
+**Bu depoda hiçbir oyun dosyası, kodu ya da varlığı yoktur.** Oyunun kendi
+kopyana ihtiyacın var. Proje, oyunun geliştiricisi ya da yayıncısıyla bağlantılı
+değildir ve onlar tarafından desteklenmez.
 
-Written from scratch, with ideas and (where GPL terms require, attribution)
-code inspired by the VIctory project and its forks, XCL and similar layers.
-See `docs/architecture.md` for the design, which targets low memory use and
-throughput first.
+## Durum (2026-11-25)
 
-## Layout
+| | |
+|---|---|
+| Hedef | Oyunu baştan sona, oynanabilir hızda (≥30 fps) ve eksiksiz görüntüyle açmak |
+| Bugün | Erken aşama: oyunu henüz çalıştırmıyor |
+| Bitenler | Başlık belleği modülü (tek bölüm, iki adres; yazma izleme + artımlı özet yedeği), yazma izleme yardımcıları |
+| Sıradaki | Yükleyici, konsol API'leri, D3D12.X → D3D12, shader çevirisi (giriş SGPR ABI'si, GS → mesh) |
+| Ölçülen hedefler | Katmanın kendi belleği ~1 GB altında; eşzamansız GPU gönderimi; kare başına kopya yok |
 
-| Path | What |
-| --- | --- |
-| `apps/aura` | the executable (run, inspect, translate) |
-| `crates/aura-loader` | maps the title's PE images, runs its x86-64 code in-process |
-| `crates/aura-hle` | the console's OS surface (kernel, runtime, storage, input, audio) |
-| `crates/aura-gpu` | the console's D3D12.X on host D3D12; ownership of title memory |
-| `crates/aura-shader` | console GPU code to DXIL, ahead of time where possible |
-| `crates/aura-formats` | the title's archive, texture and audio container formats |
-| `crates/aura-core` | shared plumbing (config, logging, clocks) |
+Tasarım ve gerekçeler: [`docs/architecture.md`](docs/architecture.md).
 
-## License
+## Gereksinimler
 
-GPL-3.0-or-later. See LICENSE.
+- Windows 10/11 x64, AVX2 destekli işlemci
+- Shader model 6.6 ve mesh shader destekli bir Direct3D 12 ekran kartı
+- Rust (kararlı sürüm)
+- Oyunun kendi kopyan (depoya asla eklenmez)
+
+## Derleme
+
+```powershell
+cargo build --release
+cargo test --workspace
+```
+
+## Oynama
+
+Henüz yok. Çalıştırılabilir dosya şimdilik yalnızca durumunu yazar:
+
+```powershell
+target\release\aura.exe
+```
+
+## Kurallar
+
+- Depoya oyuna ait hiçbir dosya, kod, varlık, anahtar ya da oyunun adı girmez.
+  Kodda ve belgelerde oyundan "yeni çıkmış bir oyun" diye söz edilir.
+- Kişisel bilgiler (yollar, kullanıcı adları, e-postalar, anahtarlar,
+  belirteçler) depoya girmez. `.gitignore` oyun dosyası türlerini dışarıda tutar.
+- Her kod değişikliği kendi commit'iyle gelir; testler ve `cargo clippy` temiz kalır.
+- Yorumlar bir şeyin **neden** öyle olduğunu anlatır.
+
+## Lisans
+
+GPL-3.0-or-later (bkz. `LICENSE`). Tasarım, VIctory (Marvisak) ve onun
+çatallarından (victory-fork, ztrx, VItoriaBr) edinilen bilgilerle sıfırdan
+yazılmaktadır; GPL koşullarının gerektirdiği yerlerde atıf yapılır.
