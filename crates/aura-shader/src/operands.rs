@@ -484,10 +484,20 @@ fn vector(o: &mut Operands, inst: &Inst, name: &str) {
     let compare = name.starts_with("v_cmp");
     // Field positions per encoding: sources, vector destination and (VOP3
     // only) a scalar destination for carries and compare results.
+    // SDWA and DPP move source 0 into their extra dword: SDWA's bits 7:0
+    // with bit 23 telling an SGPR from a VGPR, DPP's always a VGPR.
+    let src0 = match w0 & 0x1ff {
+        0xf9 => {
+            let x = inst.words[1];
+            if (x >> 23) & 1 == 1 { x & 0xff } else { 256 + (x & 0xff) }
+        }
+        0xfa | 0xe9 | 0xea => 256 + (inst.words[1] & 0xff),
+        s => s,
+    };
     let (srcs, vdst, sdst): (Vec<u32>, Option<u32>, Option<u32>) = match inst.encoding {
-        Encoding::Vop1 => (vec![w0 & 0x1ff], Some((w0 >> 17) & 0xff), None),
-        Encoding::Vop2 => (vec![w0 & 0x1ff, 256 + ((w0 >> 9) & 0xff)], Some((w0 >> 17) & 0xff), None),
-        Encoding::Vopc => (vec![w0 & 0x1ff, 256 + ((w0 >> 9) & 0xff)], None, None),
+        Encoding::Vop1 => (vec![src0], Some((w0 >> 17) & 0xff), None),
+        Encoding::Vop2 => (vec![src0, 256 + ((w0 >> 9) & 0xff)], Some((w0 >> 17) & 0xff), None),
+        Encoding::Vopc => (vec![src0, 256 + ((w0 >> 9) & 0xff)], None, None),
         _ => {
             let count = vop3_sources(inst, name);
             let srcs: Vec<u32> = [w1 & 0x1ff, (w1 >> 9) & 0x1ff, (w1 >> 18) & 0x1ff][..count].to_vec();
@@ -673,5 +683,12 @@ mod tests {
         assert_eq!(image_addresses("image_sample", 1, true), (1, true));
         assert_eq!(image_addresses("image_sample_c_l", 2, false), (5, true));
         assert_eq!(image_addresses("image_sample_d", 1, false), (6, true));
+    }
+    #[test]
+    fn sdwa_source_zero_can_be_an_sgpr() {
+        // v_lshlrev_b32 v8, s1, v0 src1_sel:WORD_1 (SDWA, src0 = s1)
+        let o = ops(&[0x3410_00f9, 0x0586_0601]);
+        let r = reads(&o);
+        assert!(r.contains(&Unit::S(1)) && r.contains(&Unit::V(0)), "{r:?}");
     }
 }
