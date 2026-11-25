@@ -1,0 +1,13 @@
+[package]
+name = "aura"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+aura-core = { path = "../../crates/aura-core" }
+aura-formats = { path = "../../crates/aura-formats" }
+aura-gpu = { path = "../../crates/aura-gpu" }
+aura-hle = { path = "../../crates/aura-hle" }
+aura-loader = { path = "../../crates/aura-loader" }
+aura-shader = { path = "../../crates/aura-shader" }

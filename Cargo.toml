@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/aura",
+    "crates/aura-core",
+    "crates/aura-formats",
+    "crates/aura-gpu",
+    "crates/aura-hle",
+    "crates/aura-loader",
+    "crates/aura-shader",
+]
+
+[profile.release]
+debug = "line-tables-only"
