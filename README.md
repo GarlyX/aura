@@ -14,8 +14,8 @@ değildir ve onlar tarafından desteklenmez.
 |---|---|
 | Hedef | Oyunu baştan sona, oynanabilir hızda (≥30 fps) ve eksiksiz görüntüyle açmak |
 | Bugün | Erken aşama: oyunu henüz çalıştırmıyor |
-| Bitenler | Başlık belleği modülü (tek bölüm, iki adres; yazma izleme + artımlı özet yedeği), yazma izleme yardımcıları |
-| Sıradaki | Yükleyici, konsol API'leri, D3D12.X → D3D12, shader çevirisi (giriş SGPR ABI'si, GS → mesh) |
+| Bitenler | Başlık belleği modülü (tek bölüm, iki adres; yazma izleme + artımlı özet yedeği); shader çevirisinin ilk hattı: konsol GPU kodu çözücüsü, kontrol akışı, SSA, şerit (EXEC) maskeleri, geometri shader'ı → HLSL mesh shader. Oyunun 196 geometri programının tamamı çevriliyor ve DirectX derleyicisinden hatasız geçiyor |
+| Sıradaki | Çevrilen shader'ların çalışma zamanı bağlamaları ve oyun içinde doğrulanması; yükleyici, konsol API'leri, D3D12.X → D3D12 |
 | Ölçülen hedefler | Katmanın kendi belleği ~1 GB altında; eşzamansız GPU gönderimi; kare başına kopya yok |
 
 Tasarım ve gerekçeler: [`docs/architecture.md`](docs/architecture.md).
