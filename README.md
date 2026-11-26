@@ -36,11 +36,16 @@ cargo test --workspace
 
 ## Oynama
 
-Henüz yok. Çalıştırılabilir dosya şimdilik yalnızca durumunu yazar:
+Oyunu çalıştıran katman `runtime/` klasöründedir (ayrıntılar `runtime/README.md`):
 
 ```powershell
-target\release\aura.exe
+cd runtime
+cargo build --profile diag -p victory --features diagnostics
+target\diagura-run.exe run "D:\oyun\oyun.exe" --execute
 ```
+
+Işın izleme için deneysel kip: `$env:VICTORY_RAY_TRACING = "static-bvh"` (oyunun hazır
+dünya yapıları üzerinden ışın yürüyüşü; dinamik yapı oluşturucu kapalı).
 
 ## Kurallar
 
