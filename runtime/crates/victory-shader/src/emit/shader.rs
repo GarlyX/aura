@@ -24,6 +24,13 @@ pub const ROOT_CBV_SPACE: u32 = 1;
 /// root SRV also tells the host that the buffer views of the whole heap
 /// must be ready when it runs, not only those its tables name.
 pub const SLOT_STRIDES: u8 = 255;
+/// The root UAV `u<SLOT_HEAP_USED>` in [`ROOT_CBV_SPACE`] of a shader that
+/// picks resources from the view heap: dword `i` set to 1 when the shader
+/// makes a handle for heap slot `i` ([`SLOT_STRIDES_COUNT`] dwords). The
+/// host keeps host copies only for the buffer views shaders were seen to
+/// pick lately, instead of for every buffer view in the heap (59,000 views,
+/// 4,300 copies, 2.2 GB in gameplay, claude-run27).
+pub const SLOT_HEAP_USED: u8 = 252;
 /// Dwords of the [`SLOT_STRIDES`] buffer: heap indices are clamped to it.
 pub const SLOT_STRIDES_COUNT: u32 = 1 << 21;
 /// After the strides, the [`SLOT_STRIDES`] buffer holds the title address of

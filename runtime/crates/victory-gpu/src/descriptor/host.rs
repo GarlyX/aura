@@ -57,6 +57,10 @@ pub(crate) struct HostHeap {
     /// (`victory_shader::emit::SLOT_STRIDES`): an upload buffer of
     /// `SLOT_STRIDES_COUNT` dwords, its GPU address and its mapping.
     strides: Option<(ID3D12Resource, u64, usize)>,
+    /// View heaps: the slots shaders picked (`SLOT_HEAP_USED`), a dword per
+    /// slot set by the card and cleared by `HostHeap::take_used`: a buffer
+    /// shared with the processor, its GPU address and its mapping.
+    used: Option<(ID3D12Resource, u64, usize)>,
     /// Title slots holding buffer views. Such a view gets its host slot
     /// (and its memory a host copy) only when something reads it: a draw
     /// through a table, or [`HostHeap::buffer_slots`] for shaders that pick
@@ -681,6 +685,19 @@ impl HostHeap {
                 Some((buffer, gpu, data as usize))
             })
             .flatten();
+        let used = (!sampler)
+            .then(|| {
+                let bytes = u64::from(victory_shader::emit::SLOT_STRIDES_COUNT) * 4;
+                let (buffer, data) = host.shared_buffer(bytes)?;
+                // SAFETY: the buffer's whole mapping; a live buffer.
+                let gpu = unsafe {
+                    std::ptr::write_bytes(data, 0, bytes as usize);
+                    buffer.GetGPUVirtualAddress()
+                };
+                crate::host::name(&buffer, || "heap slots shaders picked".to_owned());
+                Some((buffer, gpu, data as usize))
+            })
+            .flatten();
         let h = HostHeap {
             heap,
             cpu,
@@ -695,6 +712,7 @@ impl HostHeap {
             too_long: std::sync::atomic::AtomicU32::new(u32::MAX),
             spilled_filled: std::sync::atomic::AtomicU32::new(0),
             strides,
+            used,
             buffers: Mutex::default(),
             changed: Mutex::default(),
             textures: Mutex::default(),
@@ -870,6 +888,41 @@ impl HostHeap {
     /// The table's buffer, for a list to hold.
     pub(crate) fn strides_buffer(&self) -> Option<&ID3D12Resource> {
         self.strides.as_ref().map(|s| &s.0)
+    }
+
+    /// Where shaders note the slots they pick (`SLOT_HEAP_USED`), and its
+    /// buffer for a list to hold.
+    pub(crate) fn used_gpu(&self) -> Option<(u64, &ID3D12Resource)> {
+        self.used.as_ref().map(|u| (u.1, &u.0))
+    }
+
+    /// Whether shaders picked slot `index` since the last call for it (and
+    /// clears the note).
+    /// shortcut: a note the card sets between the read and the clear is
+    /// lost; the slot is noted again the next time a shader picks it.
+    pub(crate) fn take_used(&self, index: u32) -> bool {
+        let Some((_, _, data)) = &self.used else { return true };
+        if index >= victory_shader::emit::SLOT_STRIDES_COUNT {
+            return true;
+        }
+        // SAFETY: inside the mapping; the card writes 1 there, we read and clear.
+        unsafe {
+            let at = (*data as *mut u32).add(index as usize);
+            let was = at.read_volatile();
+            if was != 0 {
+                at.write_volatile(0);
+            }
+            was != 0
+        }
+    }
+
+    /// Lets slot `index` go: it reads nothing until a view is made there
+    /// again, and the host copy it showed can be let go.
+    pub(crate) fn let_go_slot(&self, index: u32) {
+        let mut made = self.made.lock().unwrap_or_else(|e| e.into_inner());
+        if made.get(index as usize).is_some_and(|&k| k != 0) {
+            self.unmake(&mut made, index);
+        }
     }
 
     /// Up to `max` title slots whose texture view is due at `frame`, each

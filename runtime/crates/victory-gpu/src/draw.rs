@@ -1044,6 +1044,29 @@ impl State {
                 }
             }
             for &(slot, param) in &stage.root_uavs {
+                if slot == victory_shader::emit::SLOT_HEAP_USED {
+                    // Ours: where shaders note the heap slots they pick.
+                    let used = self
+                        .heaps
+                        .iter()
+                        .filter(|&&h| h != 0)
+                        .map(|&h| crate::descriptor::heap(h as This))
+                        .find(|h| !h.samplers())
+                        .and_then(|h| h.host())
+                        .and_then(|h| h.used_gpu());
+                    if let Some((gpu, buffer)) = used {
+                        list.keep(buffer);
+                        // SAFETY: an open list; the list holds the buffer.
+                        unsafe {
+                            if compute {
+                                l.SetComputeRootUnorderedAccessView(param, gpu);
+                            } else {
+                                l.SetGraphicsRootUnorderedAccessView(param, gpu);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if slot == victory_shader::emit::SLOT_FAULTS {
                     // Ours: where shaders note the pages they found empty.
                     if let Some(m) = &memory {
@@ -1323,20 +1346,51 @@ impl State {
         // released resource goes stale without a write, and a slot written
         // before its memory had a host copy is only made then.
         type Ranges = std::collections::HashMap<u32, (std::sync::Arc<crate::shadow::Shadow>, u64, u64)>;
-        static RANGES: std::sync::Mutex<Option<std::collections::HashMap<usize, (u64, Ranges)>>> =
+        type Picked = std::collections::HashMap<u32, u64>;
+        static RANGES: std::sync::Mutex<Option<std::collections::HashMap<usize, (u64, Ranges, Picked)>>> =
             std::sync::Mutex::new(None);
         let mut kept = RANGES.lock().unwrap_or_else(|e| e.into_inner());
-        let (passes, ranges) = kept
+        let (passes, ranges, picked) = kept
             .get_or_insert_with(Default::default)
             .entry(std::ptr::from_ref(host) as usize)
-            .or_insert_with(|| (0, Ranges::new()));
+            .or_insert_with(|| (0, Ranges::new(), Picked::new()));
+        // Only the views shaders picked in the last `KEEP` frames are made
+        // ready (`SLOT_HEAP_USED`): every buffer view of the heap was, 59,000
+        // views and 4,300 host copies, 2.2 GB of the PC's memory shared with
+        // the card (claude-run27). A view picked for the first time reads
+        // nothing until the next pass, a frame or two late.
+        const KEEP: u64 = 30;
+        // (only with `VICTORY_HEAP_PICKED=1`, see the shader side: off, every
+        // view is made ready as before)
+        static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let all = *ALL.get_or_init(|| std::env::var_os("VICTORY_HEAP_PICKED").is_none_or(|v| v != "1"));
+        let every = host.buffer_slots();
+        for &index in &every {
+            if all || host.take_used(index) {
+                picked.insert(index, frame);
+            }
+        }
+        picked.retain(|_, seen| frame <= *seen + KEEP);
+        // Views no shader picked lately: their slots and host copies go.
+        ranges.retain(|index, _| {
+            let keep = picked.contains_key(index);
+            if !keep {
+                host.let_go_slot(*index);
+            }
+            keep
+        });
         let changed = host.buffer_changes();
-        let slots = if *passes % 16 == 0 {
+        let mut slots: Vec<u32> = if *passes % 16 == 0 {
             ranges.clear();
-            host.buffer_slots()
+            every
         } else {
             changed
         };
+        slots.retain(|i| picked.contains_key(i));
+        // Picked views not made ready yet.
+        slots.extend(picked.keys().filter(|i| !ranges.contains_key(i)).copied());
+        slots.sort_unstable();
+        slots.dedup();
         *passes += 1;
         // Whether the device was there before the pass: a view that removes
         // it is named below.

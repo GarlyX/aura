@@ -460,6 +460,13 @@ fn translate_programs(container: &Container, programs: Vec<NativeProgram>, examp
                     match emit::emit(container, &p, &program, &s, &i, &r) {
                         Ok(shader) => {
                             census_line(&label(), &p, &program, &shader);
+                            // `VICTORY_HEAP_PICK_CENSUS=1`: programs that pick buffers from
+                            // the view heap by an index they compute, by stage.
+                            if std::env::var_os("VICTORY_HEAP_PICK_CENSUS").is_some()
+                                && shader.root_srvs.contains(&victory_shader::emit::SLOT_STRIDES)
+                            {
+                                eprintln!("HEAP-PICK {:?}", p.stage);
+                            }
                             *counter(t, p.stage, 1) += 1;
                             check(shader, t, checks, label);
                         }

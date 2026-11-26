@@ -20,6 +20,8 @@ use crate::native::{HwStage, NativeProgram, ResourceType, RootType, StageIo, Usa
 use crate::resource::{Address, CODE, MEMORY, Resources, Role, Site, Source};
 use crate::structure::{Atom, Bool, LaneExit, Structured};
 use super::lds_order::{LdsAccess, implies, lds_clash, lds_span, lone_lanes};
+#[path = "heap_use.rs"]
+mod heap_use;
 
 /// The ray-tracing node test (`image_bvh_intersect_ray`), a child module so
 /// it shares the emitter's state.
@@ -6359,6 +6361,15 @@ impl<'a> Lower<'a> {
                 // A waterfall loop's load at the first lane's offset reads
                 // each lane's own entry (see `resource::Waterfall`).
                 let per_lane = self.x.res.waterfall.loads.contains(load);
+                // (picked from the heap by the shader, not a table's slot)
+                let picked = self
+                    .scalar
+                    .get(load)
+                    .and_then(|a| self.x.native.layout.get(a.param))
+                    .is_some_and(|p| p.root == RootType::ResourceHeap);
+                if !sampler && picked {
+                    self.mark_heap_use(index);
+                }
                 let h = self
                     .s
                     .heap_handle(self.cur, index, sampler, per_lane, props);
@@ -6423,6 +6434,9 @@ impl<'a> Lower<'a> {
                 let _ = site;
                 let cmp = props.0 & 0x8000 != 0;
                 let phi = self.descriptor_phi(*block, args, sampler, 8, cmp)?;
+                if !sampler && !self.s.pixel && self.from_heap(src) {
+                    self.mark_heap_use(phi);
+                }
                 Ok(self.s.heap_handle(self.cur, phi, sampler, false, props))
             }
             Source::Select { scc, args } => {
@@ -6441,6 +6455,9 @@ impl<'a> Lower<'a> {
                 let set = self.heap_index(a, fa, sampler)?;
                 let clear = self.heap_index(b, fb, sampler)?;
                 let index = self.s.m.select(self.cur, cond, set, clear);
+                if !sampler && !self.s.pixel && self.from_heap(src) {
+                    self.mark_heap_use(index);
+                }
                 Ok(self.s.heap_handle(self.cur, index, sampler, false, props))
             }
             Source::Fetched { .. } | Source::Lanes { .. } | Source::LanePhi { .. } => {
@@ -6448,6 +6465,9 @@ impl<'a> Lower<'a> {
                 // reads it from the first active lane): each lane's heap
                 // index, non-uniform.
                 let index = self.lane_heap_index(src, sampler)?;
+                if !sampler && !self.s.pixel && self.from_heap(src) {
+                    self.mark_heap_use(index);
+                }
                 Ok(self.s.heap_handle(self.cur, index, sampler, true, props))
             }
         }
@@ -6564,6 +6584,7 @@ impl<'a> Lower<'a> {
         self.strides.insert(key, v);
         Ok(Some(v))
     }
+
 
     /// The heap index of a descriptor that may differ between lanes,
     /// computed in the current block (or, chosen by control flow, at the
