@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# The runtime is a workspace of its own (runtime/Cargo.toml).
+exclude = ["runtime"]
 members = [
     "apps/aura",
     "crates/aura-core",
