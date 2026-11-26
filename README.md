@@ -41,7 +41,7 @@ Oyunu çalıştıran katman `runtime/` klasöründedir (ayrıntılar `runtime/RE
 ```powershell
 cd runtime
 cargo build --profile diag -p victory --features diagnostics
-target\diagura-run.exe run "D:\oyun\oyun.exe" --execute
+target\diag\aura-run.exe run "D:\oyun\oyun.exe" --execute
 ```
 
 Işın izleme için deneysel kip: `$env:VICTORY_RAY_TRACING = "static-bvh"` (oyunun hazır
