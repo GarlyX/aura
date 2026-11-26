@@ -70,3 +70,19 @@ tabanlı yaklaşım hiç bariyer eklemez.
   yalnızca aynı konsol dalgasının iki yarısı arasında önemlidir; farklı konsol
   dalgaları zaten konsol kodundaki bariyerlerle sıralıdır.
 - Şerit indeksli tabanlar (`tid * 4 + sabit`) için aralık analizi.
+
+## Yarım-dalga yaklaşımı
+
+Bazı programlar takası tüm şeritlerin çalışmadığı bir blokta ister: ör. HLSL
+`WaveActiveAllTrue(koşul)`, konsol derleyicisinde `(koşul ∧ EXEC) xor EXEC`
+maskesindeki şerit sayısının sıfır olup olmadığı testi olarak çıkar; ardından
+şerit dallarında ilk-şerit okumaları ve indirgemeler gelir. Bariyer
+konamadığı için kesin çeviri mümkün değildir.
+
+Yaklaşık yol: her yarı kendi cevabını kullanır (dalga genelindeki sonuç iki
+yarım-dalga sonucuna dönüşür). Bu tür testler çoğunlukla bir hızlandırmayı
+seçer ("tüm şeritler tamamen gölgede ise süzmeyi atla"), sonuç her şerit için
+geçerli kalır. Test oyununda kademeli gölge haritası ve ekran-uzayı izleme
+programları bu yolla çalıştı; yedi dakikalık oynanışta GPU kilitlenmedi.
+Kesin olmayan bir yol olduğu için kapatılabilir kalmalı ve hangi programların
+ondan geçtiği günlükte görünmeli.
