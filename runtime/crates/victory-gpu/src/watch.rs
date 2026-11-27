@@ -811,9 +811,10 @@ fn view_known() -> bool {
     /// 0 off, 1 on, 2 in turn.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_VIEW_KNOWN").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        // aura: on unless `=0` (off in tests, which expect the old way).
+        _ => u8::from(!cfg!(test)),
     }) {
         0 => false,
         1 => true,
@@ -2071,6 +2072,8 @@ fn install() {
         // (then it is ours again, not read-only for some other reason).
         let mut g = guards();
         if open(&mut g, at, at + 1) {
+            drop(g);
+            crate::port_descriptors::faulted(at, r.ExceptionAddress as usize);
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::GuardFaults, 1);
             crate::framelog::add(crate::framelog::T::GuardFaults, 1);

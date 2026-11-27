@@ -22,12 +22,15 @@
 //!    on, pass every thread start and end on to the attached images.
 
 pub mod budget;
+pub mod descriptor_sites;
 #[cfg(windows)]
 mod console_insn;
 mod crash;
 pub mod prepare;
+pub mod frame_rate;
 pub mod resolution;
 pub mod resolve;
+pub mod watchdog;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod stacks;
 #[cfg(windows)]

@@ -196,6 +196,7 @@ fn mirror(handle: u64) {
     let Some((heap, index)) = shader_slot(handle) else {
         return;
     };
+    crate::port_descriptors::mark(handle);
     #[cfg(feature = "diagnostics")]
     if heap.samplers() {
         note_sampler(heap as *const Heap as usize, index, heap.desc.count);
@@ -253,13 +254,38 @@ pub(crate) fn sync_heaps() {
             end as usize
         };
         let asking = std::time::Instant::now();
-        let ranges = written.take(start as usize, looked_end);
+        // `(from, to, a fallback audit)` byte ranges to look at. With
+        // renderer port #2 the slots the title's patched stores and copies
+        // marked, and a few pages of the write watch's every 8 frames to
+        // audit them; otherwise every changed page the write watch names.
+        let frame = crate::frame::current();
+        let mut parts: Vec<(usize, usize, bool)> = Vec::new();
+        if crate::port_descriptors::adopted(start) {
+            for (first, n) in crate::port_descriptors::take(start).unwrap_or_default() {
+                let from = start as usize + first as usize * step as usize;
+                parts.push((from, (from + n as usize * step as usize).min(looked_end), false));
+            }
+            if crate::port_descriptors::ask_due(frame) {
+                crate::port_descriptors::asked(&written.take(start as usize, looked_end));
+            }
+            for page in crate::port_descriptors::to_check(frame) {
+                parts.push((page.max(start as usize), (page + crate::watch::PAGE).min(looked_end), true));
+            }
+        } else {
+            for (range_from, range_end) in written.take(start as usize, looked_end) {
+                let mut page = range_from & !(crate::watch::PAGE - 1);
+                while page < range_end {
+                    parts.push((page.max(range_from), (page + crate::watch::PAGE).min(range_end), false));
+                    page += crate::watch::PAGE;
+                }
+            }
+        }
         SYNC_PARTS[0].fetch_add(asking.elapsed().as_micros() as u64, Relaxed);
-        for (range_from, range_end) in ranges {
-            let mut page = range_from & !(crate::watch::PAGE - 1);
-            while page < range_end {
-                let from = page.max(range_from);
-                let to = (page + crate::watch::PAGE).min(range_end);
+        for (from, to, fallback) in parts {
+            if from >= to {
+                continue;
+            }
+            {
                 // The page's records are read through the kernel, into a
                 // copy: a page the title unmaps meanwhile fails the read
                 // where 2,048 reads in place would fault.
@@ -273,7 +299,7 @@ pub(crate) fn sync_heaps() {
                     // The page's records in one go, under one lock
                     // (`HostHeap::mirror_copied_page`); one by one below
                     // with `VICTORY_HEAP_SYNC_PAGE=0`.
-                    let slots = if page_at_once() {
+                    let slots = if !fallback && page_at_once() {
                         let (seen, made) = host.mirror_copied_page(slots, (start, step), from, &page_bytes);
                         looked += seen;
                         mirrored += made;
@@ -296,10 +322,16 @@ pub(crate) fn sync_heaps() {
                         // (`HostHeap::mirror_copied`).
                         if host.mirror_copied(index as u32, handle, record) {
                             mirrored += 1;
+                            if fallback {
+                                let view = record
+                                    .get(..4)
+                                    .and_then(|b| b.try_into().ok())
+                                    .is_some_and(|b| u32::from_le_bytes(b) == VIEW_TAG);
+                                crate::port_descriptors::missed(index as u32, handle, view);
+                            }
                         }
                     }
                 }
-                page += crate::watch::PAGE;
             }
         }
     }
@@ -337,9 +369,10 @@ pub(crate) fn sync_beside() -> bool {
     /// 0 off, 1 on, 2 in turn.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_SYNC_BESIDE").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        // aura: on unless `=0` (off in tests, which expect the old way).
+        _ => u8::from(!cfg!(test)),
     }) {
         0 => false,
         1 => true,
@@ -448,9 +481,10 @@ fn sync_cut() -> bool {
     /// 0 off, 1 on, 2 in turn.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_HEAP_SYNC_CUT").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        // aura: on unless `=0` (off in tests, which expect the old way).
+        _ => u8::from(!cfg!(test)),
     }) {
         0 => false,
         1 => true,
@@ -595,6 +629,7 @@ pub(crate) fn fill_spilled_samplers() {
 #[cfg(windows)]
 impl Drop for Heap {
     fn drop(&mut self) {
+        crate::port_descriptors::let_go(self.start);
         let at = std::ptr::from_ref::<Heap>(self) as usize;
         let mut heaps = SHADER_HEAPS.write().unwrap_or_else(|e| e.into_inner());
         heaps.retain(|&(_, _, h)| h != at);
@@ -796,7 +831,7 @@ static VIEWS: std::sync::RwLock<Views> = std::sync::RwLock::new(Views {
     shapes: Vec::new(),
     shape_index: std::collections::BTreeMap::new(),
 });
-const VIEW_TAG: u32 = u32::from_le_bytes(*b"vVIE");
+pub(crate) const VIEW_TAG: u32 = u32::from_le_bytes(*b"vVIE");
 
 /// A record is the tag and two words, `i` and `generation` (the host keeps
 /// them as one 64-bit key per slot). The top two bits of `generation` say
@@ -1475,6 +1510,10 @@ pub(crate) extern "system" fn create_heap(
             .then(|| crate::watch::track(start as usize, size as usize, true))
             .flatten(),
     });
+    #[cfg(windows)]
+    if placed && visible && desc.kind == VIEWS_KIND {
+        crate::port_descriptors::adopt(start, desc.count);
+    }
     #[cfg(windows)]
     if visible {
         let at = std::ptr::from_ref::<Heap>(&heap) as usize;

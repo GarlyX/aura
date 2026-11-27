@@ -63,10 +63,10 @@ fn no_hit() -> bool {
         #[cfg(test)]
         return TEST_NO_HIT.get();
     }
-    // Only while the builder is off (`VICTORY_BVH_BUILDER=0`; it runs by
-    // default), and not with `VICTORY_BVH_NO_HIT=0`.
+    // Only while the builder is off (aura: unless `VICTORY_BVH_BUILDER=1`),
+    // and not with `VICTORY_BVH_NO_HIT=0`.
     std::env::var_os("VICTORY_BVH_NO_HIT").is_none_or(|v| v != "0")
-        && std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "0")
+        && std::env::var_os("VICTORY_BVH_BUILDER").is_none_or(|v| v != "1")
 }
 
 /// Where the instruction's node is.

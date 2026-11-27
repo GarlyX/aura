@@ -384,9 +384,11 @@ pub(crate) fn builder_off(why: &'static str) {
 #[cfg(windows)]
 pub(crate) fn builder_runs() -> bool {
     static ALLOWED: OnceLock<bool> = OnceLock::new();
-    // On unless `VICTORY_BVH_BUILDER=0` (since 2026-11-27: the ray-tracing
-    // programs are to be used).
-    if !*ALLOWED.get_or_init(|| std::env::var_os("VICTORY_BVH_BUILDER").is_none_or(|v| v != "0")) {
+    // aura: off unless `VICTORY_BVH_BUILDER=1`. On a 16 GB PC with it on
+    // (upstream's default since 2026-11-27) the world ran at 0.1 fps with
+    // 25.8 GB private and the picture went white within minutes
+    // (rebase-run2; the same was reported on an 8 GB card in fxceless #1083).
+    if !*ALLOWED.get_or_init(|| std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "1")) {
         return false;
     }
     let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
