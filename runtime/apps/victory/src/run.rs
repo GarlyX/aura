@@ -153,7 +153,7 @@ pub fn run(
         let (w, h) = output.unwrap_or((3840, 2160));
         let s = scale.unwrap_or(2.0 / 3.0);
         let (rw, rh) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
-        let why = if output.is_some() { "ekrana ya da VICTORY_OUTPUT'a göre" } else { "oyunun kendi ayarı" };
+        let why = if output.is_some() { "aura varsayılanı ya da VICTORY_OUTPUT" } else { "oyunun kendi ayarı" };
         victory_hle::status::event(&format!("çözünürlük: çıkış {w}x{h}, oyun {rw}x{rh} çiziyor ({why})"));
         // The title's stall watchdog, off (VICTORY_WATCHDOG=1 keeps it).
         // SAFETY: the image stays mapped and nothing of it has run yet.

@@ -62,6 +62,10 @@ pub const MODES: [(u32, u32); 5] = [(1280, 720), (1664, 936), (1920, 1080), (256
 pub fn asked_output() -> Option<(u32, u32)> {
     match std::env::var("VICTORY_OUTPUT") {
         Ok(spec) if spec.trim().eq_ignore_ascii_case("native") => None,
+        // aura: the screen's size only with `VICTORY_OUTPUT=screen`; by
+        // default the smallest mode, 1280x720 (the frame is the processor's,
+        // and every pixel of the output is copied, compared and shown).
+        Ok(spec) if spec.trim().eq_ignore_ascii_case("screen") => screen_size().and_then(fitting_mode),
         Ok(spec) => {
             let size = parse_output(&spec);
             if size.is_none() {
@@ -69,9 +73,12 @@ pub fn asked_output() -> Option<(u32, u32)> {
             }
             size
         }
-        Err(_) => screen_size().and_then(fitting_mode),
+        Err(_) => Some(DEFAULT_OUTPUT),
     }
 }
+
+/// aura's output size without `VICTORY_OUTPUT`.
+pub const DEFAULT_OUTPUT: (u32, u32) = (1280, 720);
 
 /// The largest of the title's modes no larger than `screen`; `None` when
 /// that is its own 3840x2160 (nothing to change).
@@ -115,13 +122,20 @@ pub fn parse_output(spec: &str) -> Option<(u32, u32)> {
 /// (+0x94, max(2/3, scale)) stays at 2/3. `None` if unset or out of range
 /// (said why).
 pub fn asked_render_scale() -> Option<f32> {
-    let spec = std::env::var("VICTORY_RENDER_SCALE").ok()?;
+    // aura: half the output's width and height by default (640x360 at
+    // 1280x720), enlarged by the title's own upscaler.
+    let Ok(spec) = std::env::var("VICTORY_RENDER_SCALE") else {
+        return Some(DEFAULT_RENDER_SCALE);
+    };
     let scale = parse_render_scale(&spec);
     if scale.is_none() {
         eprintln!("VIctory: VICTORY_RENDER_SCALE={spec}: expected 0.5 to 1.0");
     }
     scale
 }
+
+/// aura's render scale without `VICTORY_RENDER_SCALE`.
+pub const DEFAULT_RENDER_SCALE: f32 = 0.5;
 
 pub fn parse_render_scale(spec: &str) -> Option<f32> {
     spec.trim().parse::<f32>().ok().filter(|s| (0.5..=1.0).contains(s))

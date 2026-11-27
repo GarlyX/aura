@@ -340,7 +340,9 @@ pub(crate) static WALKS_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::
 #[cfg(windows)]
 pub(crate) fn walk_held(this: This) -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    if this.is_null() || !*ON.get_or_init(|| std::env::var_os("VICTORY_BVH_HOLD").is_some_and(|v| v == "1")) {
+    // aura: on unless `VICTORY_BVH_HOLD=0` (ray tracing off: the builder
+    // is off, so the rays walk bytes, not a scene); never in tests.
+    if this.is_null() || !*ON.get_or_init(|| !cfg!(test) && std::env::var_os("VICTORY_BVH_HOLD").is_none_or(|v| v != "0")) {
         return false;
     }
     let p = pipeline(this);
