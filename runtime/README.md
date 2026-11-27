@@ -9,13 +9,18 @@ kart belleğinde tamponlar, ayrı iş parçacığında geri kopya).
 **Bu depoda hiçbir oyun dosyası, kodu ya da varlığı yoktur.** Oyunun kendi
 kopyana ihtiyacın var.
 
-## Durum (2026-11-26)
+## Durum (2026-11-27)
+
+Taban: fxceless/victory-fork ana dalı `9a9091d` (GPL-3.0); üstünde aura'nın NVIDIA
+düzeltmeleri, çözünürlük/bütçe/ölçekleyici yamaları (yalnızca bellekte), giriş
+videosu kare düzeltmesi, ses önceliği, terminal durum satırları (`README.upstream.md`:
+tabanın kendi notları).
 
 | | |
 |---|---|
-| Çalışıyor | Açılış, menüler, oynanışa giriş (hücre/avlu sahnesi), kayıt |
-| Hız | Oynanışta ~3 fps (RTX 3080 Ti 12 GB, 16 GB RAM) |
-| Eksik | Işın izleme (yapı oluşturucu çevriliyor, oyunda kararsız), oynanabilir hız |
+| Çalışıyor | Açılış, menüler, oynanışa giriş, kayıt; Series X ve Series S profilleri |
+| Hız | Oynanışta ~3.1-3.3 fps (RTX 3080 Ti 12 GB, 16 GB RAM; çıkış ekrana göre 1080p) |
+| Eksik | Işın izleme (`VICTORY_BVH_BUILDER=1` ile; 16 GB'ta yavaş), oynanabilir hız |
 
 ## Derleme
 
