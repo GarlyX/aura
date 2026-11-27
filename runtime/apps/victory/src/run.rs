@@ -127,13 +127,22 @@ pub fn run(
     // image only.
     // SAFETY: the image stays mapped and nothing of it has run yet.
     let (output, scale) =
-        unsafe { victory_loader::resolution::apply_asked(image.base(), image.info().size_of_image as usize) };
+        unsafe {
+            victory_loader::resolution::apply_asked(
+                image.base(),
+                image.info().size_of_image as usize,
+                matches!(console, Console::SeriesS),
+            )
+        };
     {
         let (w, h) = output.unwrap_or((3840, 2160));
         let s = scale.unwrap_or(2.0 / 3.0);
         let (rw, rh) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
         let why = if output.is_some() { "ekrana ya da VICTORY_OUTPUT'a göre" } else { "oyunun kendi ayarı" };
         victory_hle::status::event(&format!("çözünürlük: çıkış {w}x{h}, oyun {rw}x{rh} çiziyor ({why})"));
+        if matches!(console, Console::SeriesS) && std::env::var_os("VICTORY_UPSCALER").is_none() {
+            victory_hle::status::event("Series S: oyunun kendi ölçekleyicisi kullanılıyor (FidelityFX yolu kartı düşürüyordu)");
+        }
     }
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));

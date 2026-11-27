@@ -138,9 +138,17 @@ pub fn asked_ffx_scale() -> Option<f32> {
     scale
 }
 
-/// `VICTORY_UPSCALER=<kind>`: 6 (the title's own) or 7 (FidelityFX).
-pub fn asked_upscaler() -> Option<u32> {
-    let spec = std::env::var("VICTORY_UPSCALER").ok()?;
+/// `VICTORY_UPSCALER=<kind>`: 6 (the title's own) or 7 (FidelityFX);
+/// unset, 6 on the smaller console's profile (`smaller_console`).
+pub fn asked_upscaler(smaller_console: bool) -> Option<u32> {
+    let Ok(spec) = std::env::var("VICTORY_UPSCALER") else {
+        // The smaller console's profile: the title picks FidelityFX (7),
+        // whose pipelines here end in the host device removed for an
+        // invalid call some 90 s in (aura-run5); with its own upscaler (6)
+        // the run went on in the world (aura-run16). `VICTORY_UPSCALER=7`
+        // keeps the title's choice.
+        return smaller_console.then_some(6);
+    };
     let kind = spec.trim().parse::<u32>().ok().filter(|k| matches!(k, 6 | 7));
     if kind.is_none() {
         eprintln!("VIctory: VICTORY_UPSCALER={spec}: expected 6 (the title's own) or 7 (FidelityFX)");
@@ -348,7 +356,7 @@ pub unsafe fn write(base: usize, size: usize, site: &Site, code: &[u8]) -> Patch
 /// scale set (`None`: the title's own 2/3), each only if its site was
 /// changed.
 #[cfg(windows)]
-pub unsafe fn apply_asked(base: usize, size: usize) -> (Option<(u32, u32)>, Option<f32>) {
+pub unsafe fn apply_asked(base: usize, size: usize, smaller_console: bool) -> (Option<(u32, u32)>, Option<f32>) {
     let mut asked: Vec<(&Site, Vec<u8>, String)> = Vec::new();
     let output = asked_output();
     let scale = asked_render_scale();
@@ -365,7 +373,7 @@ pub unsafe fn apply_asked(base: usize, size: usize) -> (Option<(u32, u32)>, Opti
     if let Some(s) = asked_ffx_scale() {
         asked.push((&FFX_SCALE, ffx_scale_code(s), format!("{s}")));
     }
-    if let Some(kind) = asked_upscaler() {
+    if let Some(kind) = asked_upscaler(smaller_console) {
         asked.push((&PICKER, picker_code(kind), format!("returns {kind}")));
     }
     for (site, code, value) in asked {
