@@ -857,9 +857,11 @@ pub(crate) fn clean(page: usize) -> bool {
 fn light_mode() -> u8 {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("VICTORY_LIGHT_REFRESH").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        // aura: on unless `=0` (port-run14: refreshes that copied nothing
+        // 4,300 -> 570 a frame, the flush 18 -> 6 ms; off in tests).
+        _ => u8::from(!cfg!(test)),
     })
 }
 

@@ -1154,10 +1154,11 @@ fn table_stages() -> bool {
     /// 0 off, 1 on, 2 in turn every 20 s, 3 in turn every 40 s.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_TABLE_STAGES").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
         Ok("alt40") => 3,
-        _ => 0,
+        // aura: on unless `=0` (off in tests).
+        _ => u8::from(!cfg!(test)),
     }) {
         0 => false,
         1 => true,
