@@ -5826,6 +5826,15 @@ impl Meter {
         let picked = crate::draw::HEAP_BUFFER_PASSES.swap(0, Ordering::Relaxed) as f64 / frames;
         let picked_ms =
             crate::draw::HEAP_BUFFER_MICROS.swap(0, Ordering::Relaxed) as f64 / 1e3 / frames;
+        let [part_slots, part_refresh, part_textures, part_n, part_bytes] =
+            [0, 1, 2, 3, 4].map(|i| crate::draw::HEAP_BUFFER_PARTS[i].swap(0, Ordering::Relaxed) as f64 / frames);
+        tracing::info!(
+            "heap buffer pass per frame: {:.1} ms mirroring {part_n:.0} slots, {:.1} ms refreshing {:.1} MB of picked views' copies, {:.1} ms for textures picked by index",
+            part_slots / 1e3,
+            part_refresh / 1e3,
+            part_bytes / 1e6,
+            part_textures / 1e3
+        );
         // Copies between depth textures and their colour twins, each way.
         let [twin_to_depth, twin_to_colour] =
             [2, 3].map(|i| crate::resource::TWINS[i].swap(0, Ordering::Relaxed) as f64 / frames);
@@ -6131,7 +6140,11 @@ impl Host {
 }
 
 /// A visible top-level window of this process: the one the title made, if
-/// it made one.
+/// it made one. A terminal's pseudo console (Windows Terminal, ConPTY) and a
+/// classic console also count as visible windows of this process, with no
+/// area: presenting there left the title's window white (its caption showed
+/// on the pseudo console), so windows of those classes and windows without
+/// an area are passed over.
 fn title_window() -> Option<HWND> {
     extern "system" fn visit(hwnd: HWND, found: LPARAM) -> windows::core::BOOL {
         let mut process = 0;
@@ -6140,12 +6153,26 @@ fn title_window() -> Option<HWND> {
             GetWindowThreadProcessId(hwnd, Some(&mut process));
             if process == windows::Win32::System::Threading::GetCurrentProcessId()
                 && IsWindowVisible(hwnd).as_bool()
+                && !console_window(hwnd)
             {
                 *(found.0 as *mut Option<HWND>) = Some(hwnd);
                 return false.into();
             }
         }
         true.into()
+    }
+    /// A console's window, or one with no area.
+    fn console_window(hwnd: HWND) -> bool {
+        let mut class = [0u16; 64];
+        // SAFETY: a window handle and a buffer of that length.
+        let n = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
+        let class = String::from_utf16_lossy(&class[..n.min(class.len())]);
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        // SAFETY: a window handle and a structure it fills.
+        let sized = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok()
+            && rect.right > rect.left
+            && rect.bottom > rect.top;
+        matches!(class.as_str(), "PseudoConsoleWindow" | "ConsoleWindowClass") || !sized
     }
     let mut found: Option<HWND> = None;
     // SAFETY: the callback only writes `found`, which outlives the call.

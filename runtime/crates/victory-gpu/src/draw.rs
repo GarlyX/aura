@@ -324,6 +324,10 @@ pub(crate) static HEAP_VIEWS_ELSEWHERE: AtomicU64 = AtomicU64::new(0);
 /// index ([`State::heap_buffers`]), and the microseconds they took.
 pub(crate) static HEAP_BUFFER_PASSES: AtomicU64 = AtomicU64::new(0);
 pub(crate) static HEAP_BUFFER_MICROS: AtomicU64 = AtomicU64::new(0);
+/// Of the heap buffer passes: µs mirroring slots, µs refreshing the
+/// picked views' host copies, µs in the texture side; slots mirrored,
+/// bytes of spans refreshed.
+pub(crate) static HEAP_BUFFER_PARTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Textures brought up to date for shaders that pick them by index
 /// ([`State::heap_textures`]), the bytes of their memory, and the slots
 /// still waiting.
@@ -1347,13 +1351,16 @@ impl State {
         // before its memory had a host copy is only made then.
         type Ranges = std::collections::HashMap<u32, (std::sync::Arc<crate::shadow::Shadow>, u64, u64)>;
         type Picked = std::collections::HashMap<u32, u64>;
-        static RANGES: std::sync::Mutex<Option<std::collections::HashMap<usize, (u64, Ranges, Picked)>>> =
+        // Slots whose view has no host copy to show yet: the view, asked
+        // again for its copy at each pass without mirroring the slot anew.
+        type Unready = std::collections::HashMap<u32, crate::descriptor::View>;
+        static RANGES: std::sync::Mutex<Option<std::collections::HashMap<usize, (u64, Ranges, Picked, Unready)>>> =
             std::sync::Mutex::new(None);
         let mut kept = RANGES.lock().unwrap_or_else(|e| e.into_inner());
-        let (passes, ranges, picked) = kept
+        let (passes, ranges, picked, unready) = kept
             .get_or_insert_with(Default::default)
             .entry(std::ptr::from_ref(host) as usize)
-            .or_insert_with(|| (0, Ranges::new(), Picked::new()));
+            .or_insert_with(|| (0, Ranges::new(), Picked::new(), Unready::new()));
         // Only the views shaders picked in the last `KEEP` frames are made
         // ready (`SLOT_HEAP_USED`): every buffer view of the heap was, 59,000
         // views and 4,300 host copies, 2.2 GB of the PC's memory shared with
@@ -1364,31 +1371,53 @@ impl State {
         // view is made ready as before)
         static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let all = *ALL.get_or_init(|| std::env::var_os("VICTORY_HEAP_PICKED").is_none_or(|v| v != "1"));
-        let every = host.buffer_slots();
-        for &index in &every {
-            if all || host.take_used(index) {
-                picked.insert(index, frame);
+        let mut slots: Vec<u32> = if all {
+            // Every view is wanted: nothing to pick, so no per-slot
+            // bookkeeping (a map entry, a retain and a sort over all 83,000
+            // slots each pass, some 50 ms of the pass's 90-100 a world frame
+            // at 1080p, aura-run17). The slots written since the last pass,
+            // and all of them every 16 passes; a view without a copy yet is
+            // kept in `unready` and only its copy asked for below (it was
+            // mirrored anew every pass: 35,000-80,000 slots a frame).
+            let changed = host.buffer_changes();
+            if *passes % 16 == 0 {
+                ranges.clear();
+                unready.clear();
+                host.buffer_slots()
+            } else {
+                for index in &changed {
+                    unready.remove(index);
+                }
+                changed
             }
-        }
-        picked.retain(|_, seen| frame <= *seen + KEEP);
-        // Views no shader picked lately: their slots and host copies go.
-        ranges.retain(|index, _| {
-            let keep = picked.contains_key(index);
-            if !keep {
-                host.let_go_slot(*index);
-            }
-            keep
-        });
-        let changed = host.buffer_changes();
-        let mut slots: Vec<u32> = if *passes % 16 == 0 {
-            ranges.clear();
-            every
         } else {
-            changed
+            let every = host.buffer_slots();
+            for &index in &every {
+                if host.take_used(index) {
+                    picked.insert(index, frame);
+                }
+            }
+            picked.retain(|_, seen| frame <= *seen + KEEP);
+            // Views no shader picked lately: their slots and host copies go.
+            ranges.retain(|index, _| {
+                let keep = picked.contains_key(index);
+                if !keep {
+                    host.let_go_slot(*index);
+                }
+                keep
+            });
+            let changed = host.buffer_changes();
+            let mut slots = if *passes % 16 == 0 {
+                ranges.clear();
+                every
+            } else {
+                changed
+            };
+            slots.retain(|i| picked.contains_key(i));
+            // Picked views not made ready yet.
+            slots.extend(picked.keys().filter(|i| !ranges.contains_key(i)).copied());
+            slots
         };
-        slots.retain(|i| picked.contains_key(i));
-        // Picked views not made ready yet.
-        slots.extend(picked.keys().filter(|i| !ranges.contains_key(i)).copied());
         slots.sort_unstable();
         slots.dedup();
         *passes += 1;
@@ -1396,6 +1425,8 @@ impl State {
         // it is named below.
         static GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let mut alive = !GONE.load(Ordering::Relaxed) && crate::descriptor::host::device_removed().is_none();
+        let mirrored_from = std::time::Instant::now();
+        HEAP_BUFFER_PARTS[3].fetch_add(slots.len() as u64, Ordering::Relaxed);
         for (n, &index) in slots.iter().enumerate() {
             ranges.remove(&index);
             let Some(handle) = heap.handle(index) else {
@@ -1422,6 +1453,9 @@ impl State {
             // The copy the slot shows (`buffer_copy`), not the one the
             // view's range alone would find.
             let Some((shadow, address, len)) = crate::descriptor::host::buffer_copy(&view) else {
+                if all {
+                    unready.insert(index, view);
+                }
                 continue;
             };
             #[cfg(feature = "diagnostics")]
@@ -1430,6 +1464,18 @@ impl State {
             }
             ranges.insert(index, (shadow, address, address + len));
         }
+        // Views that had no copy: asked again, the slot not mirrored again
+        // (a write to it brings it back through `buffer_changes`).
+        if all && !unready.is_empty() {
+            unready.retain(|&index, view| match crate::descriptor::host::buffer_copy(view) {
+                Some((shadow, address, len)) => {
+                    ranges.insert(index, (shadow, address, address + len));
+                    false
+                }
+                None => true,
+            });
+        }
+        HEAP_BUFFER_PARTS[0].fetch_add(mirrored_from.elapsed().as_micros() as u64, Ordering::Relaxed);
         let views = ranges.len() as u32;
         // Per host copy, the span its picked views cover.
         let mut spans: std::collections::HashMap<usize, (std::sync::Arc<crate::shadow::Shadow>, u64, u64)> =
@@ -1442,6 +1488,8 @@ impl State {
         }
         drop(kept);
         let bytes: u64 = spans.values().map(|s| s.2 - s.1).sum();
+        HEAP_BUFFER_PARTS[4].fetch_add(bytes, Ordering::Relaxed);
+        let refreshed_from = std::time::Instant::now();
         // Memory that is not write-watched is copied whole by every refresh.
         // It was once refreshed only every 120 frames (unmapped pages read
         // one by one cost 14 GB a frame in run 11, before they were
@@ -1474,7 +1522,10 @@ impl State {
             }
             shadow.refresh(list, *from, to - from);
         }
+        HEAP_BUFFER_PARTS[1].fetch_add(refreshed_from.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let textures_from = std::time::Instant::now();
         self.heap_textures(list, heap, host);
+        HEAP_BUFFER_PARTS[2].fetch_add(textures_from.elapsed().as_micros() as u64, Ordering::Relaxed);
         HEAP_BUFFER_PASSES.fetch_add(1, Ordering::Relaxed);
         HEAP_BUFFER_MICROS.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         static LOGGED: AtomicU64 = AtomicU64::new(0);
