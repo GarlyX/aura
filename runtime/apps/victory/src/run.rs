@@ -106,6 +106,19 @@ pub fn run(
         println!("not executing (pass --execute to start the title)");
         return Ok(());
     }
+    // The title's memory budget (VICTORY_BUDGET=small, VICTORY_BUDGET_POOL7_MB;
+    // off without them): its pool table, rewritten before its code runs.
+    {
+        use victory_loader::budget::{Outcome, apply, asked};
+        let asked = asked();
+        let size = image.info().size_of_image as usize;
+        // SAFETY: the image stays mapped and nothing of it has run yet.
+        match unsafe { apply(image.base(), size, asked) } {
+            Outcome::Done { total_mib } => println!("budget         {asked:?}: the title's pools now total {total_mib} MiB"),
+            Outcome::Unknown => println!("budget         {asked:?} asked, but the pool table is not the known one: left alone"),
+            Outcome::Off => {}
+        }
+    }
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
     victory_hle::runtime::use_console_timers();

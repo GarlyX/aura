@@ -21,6 +21,7 @@
 //!    point on a thread with the stack size the image asks for; from then
 //!    on, pass every thread start and end on to the attached images.
 
+pub mod budget;
 #[cfg(windows)]
 mod console_insn;
 mod crash;
