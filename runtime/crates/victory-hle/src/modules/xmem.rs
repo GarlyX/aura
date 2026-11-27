@@ -933,48 +933,113 @@ thread_local! {
 
 /// [`map_alias`] itself; the caller counts it for the frame log.
 fn alias(to: usize, from: usize, len: usize) -> bool {
-    use victory_gpu::framelog::{T, add};
     let mut physical = physical();
     // As in `XMemMapPhysicalPages`: no read in place meets the gap.
     let _changing = victory_gpu::title_memory_remapping();
     unmap(&mut physical, to, len);
-    for k in (0..len).step_by(PAGE) {
-        if from == 0 {
-            break;
-        }
-        let at = from + k;
-        let Some(slice) = physical
-            .views
-            .range(..=at)
-            .next_back()
-            .filter(|(base, (size, _))| at < *base + size)
-            .map(|(base, (_, s))| Slice {
-                index: s.index + (at - base) / PAGE,
-                section: s.section.clone(),
-            })
-        else {
+    // Runs of pages that are consecutive slices of one section: one view
+    // each where the placeholders join ([`map_run`]), else page by page.
+    let mut k = 0;
+    while from != 0 && k < len {
+        let Some(slice) = source_slice(&physical, from + k) else {
             return false;
         };
-        // Counted only: whether this page follows the one mapped just
-        // before, in address and in its section (one view could show
-        // both), or is that very page again (no view can).
-        let (section, index) = (Arc::as_ptr(&slice.section) as usize, slice.index);
-        let (after, last_section, last_index) = ALIASED.get();
-        add(T::RemapAliasPages, 1);
-        if after == to + k && last_section == section {
-            if index == last_index + 1 {
-                add(T::RemapAliasRunPages, 1);
-            } else if index == last_index {
-                add(T::RemapAliasSamePages, 1);
+        let mut n = 1;
+        while k + n * PAGE < len
+            && source_slice(&physical, from + k + n * PAGE)
+                .is_some_and(|s| Arc::ptr_eq(&s.section, &slice.section) && s.index == slice.index + n)
+        {
+            n += 1;
+        }
+        if n > 1 && map_run(&mut physical, to + k, n * PAGE, slice.clone()) {
+            for j in 0..n {
+                note_aliased(to + k + j * PAGE, &Slice { index: slice.index + j, section: slice.section.clone() });
+            }
+            k += n * PAGE;
+            continue;
+        }
+        for j in 0..n {
+            let at = from + k + j * PAGE;
+            let Some(slice) = source_slice(&physical, at) else {
+                return false;
+            };
+            note_aliased(to + k + j * PAGE, &slice);
+            if !map(&mut physical, to + k + j * PAGE, PAGE, slice) {
+                return false;
             }
         }
-        ALIASED.set((to + k + PAGE, section, index));
-        if !map(&mut physical, to + k, PAGE, slice) {
-            return false;
-        }
+        k += n * PAGE;
     }
     true
 }
+
+/// The section slice shown at `at` (a page of a view we mapped).
+fn source_slice(physical: &Physical, at: usize) -> Option<Slice> {
+    physical
+        .views
+        .range(..=at)
+        .next_back()
+        .filter(|(base, (size, _))| at < *base + size)
+        .map(|(base, (_, s))| Slice {
+            index: s.index + (at - base) / PAGE,
+            section: s.section.clone(),
+        })
+}
+
+/// Counted only: whether the page mapped at `at` follows the one this
+/// thread mapped just before, in address and in its section (one view
+/// could show both), or is that very page again (no view can).
+fn note_aliased(at: usize, slice: &Slice) {
+    use victory_gpu::framelog::{T, add};
+    let (section, index) = (Arc::as_ptr(&slice.section) as usize, slice.index);
+    let (after, last_section, last_index) = ALIASED.get();
+    add(T::RemapAliasPages, 1);
+    if after == at && last_section == section {
+        if index == last_index + 1 {
+            add(T::RemapAliasRunPages, 1);
+        } else if index == last_index {
+            add(T::RemapAliasSamePages, 1);
+        }
+    }
+    ALIASED.set((at + PAGE, section, index));
+}
+
+thread_local! {
+    /// Set while [`map_run`] tries a view that may not fit: its failure is
+    /// not worth a warning (the pages are then mapped one by one).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `VirtualFree`'s flag that joins adjacent placeholders (not in windows-sys).
+const MEM_COALESCE_PLACEHOLDERS: u32 = 0x1;
+
+/// Pages mapped as one view each run (`VICTORY_PAGE_RUNS=0`: one view per
+/// page, as before).
+fn page_runs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PAGE_RUNS").is_none_or(|v| v != "0"))
+}
+
+/// Maps `slice` and the slices after it over `[base, base + len)` as one
+/// view: the one-page placeholders the range's earlier views left are
+/// joined first (a range inside one larger placeholder is split by `map`
+/// as usual). False, with nothing mapped, where they do not join.
+fn map_run(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
+    if !page_runs() {
+        return false;
+    }
+    // SAFETY: acts only on placeholders; fails harmlessly where the range
+    // is not exactly whole placeholders.
+    unsafe { VirtualFree(base as *mut c_void, len, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) };
+    QUIET.set(true);
+    let done = map(physical, base, len, slice);
+    QUIET.set(false);
+    use victory_gpu::framelog::{T, add};
+    add(if done { T::RemapRunsJoined } else { T::RemapRunsApart }, 1);
+    done
+}
+
+
 
 /// Maps `slice` and the slices after it over `[base, base + len)`, which
 /// must lie in one placeholder.
@@ -1034,6 +1099,9 @@ fn map(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
         map_view()
     };
     if view.Value as usize != base {
+        if QUIET.get() {
+            return false;
+        }
         tracing::warn!(
             address = format_args!("{base:#x}"),
             len,

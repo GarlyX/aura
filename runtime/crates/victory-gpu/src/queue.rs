@@ -1540,6 +1540,26 @@ extern "system" fn copy_page_mappings(
         unsafe { std::slice::from_raw_parts(batches, count as usize) }
     });
     let mut ok = true;
+    // What to map, in order: `(at, source, len)`, source 0 unmapping. With
+    // [`page_runs`] a mapping that goes on where the one before ended, in
+    // its address and in the pool, joins it: the title maps runs of pool
+    // pages one range of one page at a time (run port-run8: 5,872 such
+    // ranges in a frame, 4,512 of them the next page after the one
+    // before), and each was a system mapping of its own (0.4 ms each, off
+    // the processor nearly all of it).
+    let mut steps: Vec<(u64, u64, u64)> = Vec::new();
+    let runs = page_runs();
+    let mut step = |at: u64, source: u64, len: u64| {
+        if runs
+            && let Some(last) = steps.last_mut()
+            && last.0 + last.2 == at
+            && ((last.1 == 0 && source == 0) || (last.1 != 0 && last.1 + last.2 == source))
+        {
+            last.2 += len;
+            return;
+        }
+        steps.push((at, source, len));
+    };
     // The remapping meter: what the title asks for, by kind of range.
     crate::framelog::add(crate::framelog::T::PageMapCalls, 1);
     for b in batches.into_iter().flatten() {
@@ -1566,21 +1586,31 @@ extern "system" fn copy_page_mappings(
                     add(pages, u64::from(r.count));
                 }
             }
-            ok &= match r.kind {
-                0 if inside(r.count) => map(at, source, len),
-                1 if inside(1) => (0..u64::from(r.count)).all(|k| map(at + k * PAGE, source, PAGE)),
-                2 => map(at, 0, len),
-                3 => true,
-                _ => false,
-            };
+            match r.kind {
+                0 if inside(r.count) => step(at, source, len),
+                1 if inside(1) => (0..u64::from(r.count)).for_each(|k| step(at + k * PAGE, source, PAGE)),
+                2 => step(at, 0, len),
+                3 => {}
+                _ => ok = false,
+            }
             at += len;
         }
+    }
+    for (at, source, len) in steps {
+        ok &= map(at, source, len);
     }
     if !ok {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| tracing::warn!(pool = format_args!("{pool:#x}"), "a page mapping failed"));
     }
     S_OK
+}
+
+/// Whether consecutive page mappings are joined into one
+/// (`VICTORY_PAGE_RUNS=0` maps each range as the title gives it).
+fn page_runs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PAGE_RUNS").is_none_or(|v| v != "0"))
 }
 
 extern "system" fn desc(this: This, out: *mut QueueDesc) {

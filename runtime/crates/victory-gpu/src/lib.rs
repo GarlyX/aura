@@ -88,7 +88,7 @@ mod shadow;
 #[cfg(windows)]
 mod tiles;
 #[cfg(windows)]
-mod ram;
+pub mod ram;
 pub mod status;
 pub mod signature;
 #[cfg(windows)]

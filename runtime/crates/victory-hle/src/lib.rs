@@ -21,6 +21,7 @@ pub use registry::{HleExport, HleModule, registry};
 pub use victory_gpu::console;
 pub use victory_gpu::status;
 pub use victory_gpu::port_descriptors;
+pub use victory_gpu::ram;
 
 use victory_loader::{ImportResolver, Provenance, Resolution};
 use victory_pe::ImportSymbol;

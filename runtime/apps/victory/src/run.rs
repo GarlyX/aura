@@ -188,6 +188,14 @@ pub fn run(
             victory_hle::status::event("Series S: oyunun kendi ölçekleyicisi kullanılıyor (FidelityFX yolu kartı düşürüyordu)");
         }
     }
+    // The process's pages kept in RAM before others' (16 GB PCs; VICTORY_WORKING_SET_MB).
+    #[cfg(windows)]
+    if let Some(min) = victory_hle::ram::hold_working_set() {
+        victory_hle::status::event(&format!(
+            "bellek: Windows'tan en az {:.1} GB'ın RAM'de tutulması istendi (sayfalamayı azaltır)",
+            min as f64 / (1u64 << 30) as f64
+        ));
+    }
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
     victory_hle::runtime::use_console_timers();

@@ -162,6 +162,10 @@ pub enum T {
     RemapAliasPages,
     RemapAliasRunPages,
     RemapAliasSamePages,
+    /// Runs of pages mapped as one view (aura, `VICTORY_PAGE_RUNS`), and
+    /// runs whose placeholders did not join (then mapped page by page).
+    RemapRunsJoined,
+    RemapRunsApart,
     /// The title's own mapping calls (`XMemMapPhysicalPages`, and each page
     /// of `XMemMapPhysicalPagesScatter`): calls, microseconds, pages.
     RemapDirectCalls,
@@ -582,7 +586,7 @@ fn remap_meter(f: &Frame) -> String {
          after a split); splits tried {:.0}, needed {:.0}, {:.1} ms; through the queue's page-mapping copies {:.0} calls \
          {:.1} ms with the wait for the page table ({:.0} copies: {:.0} ranges {:.0} pages of pool pages in a row, {:.0} \
          ranges {:.0} pages of one pool page each, {:.0} ranges {:.0} pages unmapped), {:.0} pages mapped, {:.0} the next \
-         page after the one before, {:.0} the same page as the one before; the title's own mapping calls {:.0}, {:.1} \
+         page after the one before, {:.0} the same page as the one before; runs as one view {:.0}, apart {:.0}; the title's own mapping calls {:.0}, {:.1} \
          ms, {:.0} pages; views for disk writes {:.0}, {:.1} ms",
         t(T::RemapUnmapCalls),
         on(T::RemapUnmapCycles, T::RemapUnmapTsc),
@@ -620,6 +624,8 @@ fn remap_meter(f: &Frame) -> String {
         t(T::RemapAliasPages),
         t(T::RemapAliasRunPages),
         t(T::RemapAliasSamePages),
+        t(T::RemapRunsJoined),
+        t(T::RemapRunsApart),
         t(T::RemapDirectCalls),
         ms(T::RemapDirectUs),
         t(T::RemapDirectPages),

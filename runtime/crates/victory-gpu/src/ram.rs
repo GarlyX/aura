@@ -52,3 +52,54 @@ pub(crate) fn idle_lists(large: usize) -> usize {
             .unwrap_or(if small() { 128 } else { large })
     })
 }
+
+/// Asks Windows to keep at least this much of the process in RAM (a hard
+/// minimum working set), so that under pressure other processes and the
+/// compression store are trimmed before the title's and the layer's pages.
+///
+/// Why (run port-run10-mem, 16 GB PC, the world settled): the process held
+/// 5.6 GB in RAM, the compression store 3.1 GB, other programs about 2.5 GB,
+/// 0.9 GB was free, and the title's frames took 100,000-165,000 page faults
+/// each while it streamed (the submitting thread "at work" 1.9 s of a frame
+/// and on a processor for 0.3 s of it). `VICTORY_WORKING_SET_MB` sets the
+/// minimum; none by default: with 8,900 MB (port-run11-ws) the process held
+/// 7.5-9 GB in RAM instead of 5.6, yet the streaming frames took more page
+/// faults (115,000 against 94,000 a long frame) and were no faster. Most of
+/// those faults are first touches of the 64 KiB views the title maps
+/// thousands of times a frame, not pages Windows took away. Asked again at half the size,
+/// down to 2 GiB, if Windows turns it down; the outcome is logged and
+/// returned for the terminal.
+pub fn hold_working_set() -> Option<u64> {
+    use windows_sys::Win32::System::Memory::{
+        QUOTA_LIMITS_HARDWS_MAX_DISABLE, QUOTA_LIMITS_HARDWS_MIN_ENABLE, SetProcessWorkingSetSizeEx,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let total = total_physical()?;
+    let asked = match std::env::var("VICTORY_WORKING_SET_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(mb) => mb << 20,
+        None => 0,
+    };
+    let mut min = asked;
+    while min >= 2 << 30 {
+        // SAFETY: our own process; the maximum is a soft one (disabled as a limit).
+        let done = unsafe {
+            SetProcessWorkingSetSizeEx(
+                GetCurrentProcess(),
+                min as usize,
+                total as usize,
+                QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+            )
+        } != 0;
+        if done {
+            tracing::info!(min_mb = min >> 20, asked_mb = asked >> 20, "the process's working set: a hard minimum set (VICTORY_WORKING_SET_MB)");
+            return Some(min);
+        }
+        tracing::warn!(
+            min_mb = min >> 20,
+            error = %std::io::Error::last_os_error(),
+            "the process's working set: the minimum was turned down; asking for half"
+        );
+        min /= 2;
+    }
+    None
+}
