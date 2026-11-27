@@ -425,6 +425,8 @@ fn card_for(size: u64) -> Option<ID3D12Resource> {
     buffer
 }
 
+const WINDOW_CARD_MOST_MB: u64 = 3072;
+
 /// The most bytes of windows outside buffers whose copies go to the card's
 /// memory (`VICTORY_CARD_WINDOWS_MB`; 0, the default, none).
 ///
@@ -443,10 +445,16 @@ fn card_for(size: u64) -> Option<ID3D12Resource> {
 /// card later windows stay where they are. The CPU's side stays in the PC's
 /// memory, so the memory shared with the card does not shrink by this
 /// alone; what moves is what shaders read.
+///
+/// aura: 3,072 by default. With 1,280 (upstream's) run port-run8 (16 GB of
+/// RAM, a 12 GB card) had 1,408 windows turned down for the most while the
+/// card used 7.5 of 11.3 GB: they stayed in the PC's memory, which was
+/// down to 0.5 GB free and paging. The card's room (a fifth of its budget
+/// kept free) still stops them first.
 fn window_card_most() -> u64 {
     static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *MOST.get_or_init(|| {
-        std::env::var("VICTORY_CARD_WINDOWS_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(1280) << 20
+        std::env::var("VICTORY_CARD_WINDOWS_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(WINDOW_CARD_MOST_MB) << 20
     })
 }
 

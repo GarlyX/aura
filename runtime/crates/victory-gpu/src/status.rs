@@ -52,6 +52,9 @@ pub fn event(text: &str) {
 /// The once-a-second frame report (`host`): kept for the next status line;
 /// the first frame and the first world frame are events.
 pub(crate) fn frame_report(fps: f64, ms: f64, draws: f64, preparing: f64, waiting: f64) {
+    if draws >= WORLD_DRAWS && interval().is_none() {
+        WORLD.store(true, Relaxed);
+    }
     if interval().is_none() {
         return;
     }
@@ -66,6 +69,12 @@ pub(crate) fn frame_report(fps: f64, ms: f64, draws: f64, preparing: f64, waitin
     if draws >= WORLD_DRAWS && !WORLD.swap(true, Relaxed) {
         event(&format!("oyun dünyasına girildi ({draws:.0} çizim/kare)"));
     }
+}
+
+/// Whether a frame with the world's draws has come since the start (the
+/// opening videos and menus are behind us).
+pub(crate) fn in_world() -> bool {
+    WORLD.load(Relaxed)
 }
 
 fn phase(draws: f64) -> &'static str {

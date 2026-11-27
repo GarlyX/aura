@@ -482,9 +482,26 @@ pub(crate) fn alias(list: &HostList, placed: This, source: This) -> bool {
 ///
 /// What changes for the picture: a texture that arrives while the runtime
 /// is remapping may show a frame later. It never shows partly read.
+///
+/// aura: unset, on from the first frame of the world on
+/// ([`crate::status::in_world`]); `1` always, `0` never. On from the start
+/// the opening video went back and forth (its frames, read a frame late,
+/// came out of order); in the world the wait was the frame: run port-run8,
+/// a 4.7 s frame with 2.5 s of it waiting while the title mapped 6,254
+/// pages through a page-mapping copy, the system's mapping off the
+/// processor 98 % of the time (paging, 0.5 GB of RAM free).
 fn no_wait() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_NO_WAIT").is_some_and(|v| v == "1"))
+    /// 0 never, 1 always, 2 in the world.
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    match *MODE.get_or_init(|| match std::env::var("VICTORY_TEXTURE_NO_WAIT").as_deref() {
+        Ok("1") => 1,
+        Ok("0") => 0,
+        _ => if cfg!(test) { 0 } else { 2 },
+    }) {
+        0 => false,
+        1 => true,
+        _ => crate::status::in_world(),
+    }
 }
 
 /// Since the last frame-rate line, with [`no_wait`]: refreshes that read
