@@ -296,6 +296,95 @@ pub unsafe fn apply(base: usize, size: usize, marks: usize, sites: &[Site]) -> V
     out
 }
 
+/// A run of stores that writes `slots` 32-byte records from `rbx` on: the
+/// graphics table filler's fast path for a table of exactly four records
+/// (title+0x4d9f25f: `vmovups [rbx+0x60]`, `[rbx+0x40]`, `[rbx+0x20]`,
+/// `[rbx]`), which the six [`SITES`] do not cover. Found by
+/// `VICTORY_PORT_DESCRIPTORS_TRACE` (run port-run20): the one writer of view
+/// records into the heap besides the hooked stores and `memcpy`.
+pub struct RunSite {
+    pub at: usize,
+    pub len: usize,
+    pub fnv: u64,
+    pub slots: u8,
+}
+
+pub const RUNS: [RunSite; 1] = [RunSite { at: 0x4d9f25f, len: 19, fnv: 0x87c9dad5ad1cf103, slots: 4 }];
+
+/// The stub for a [`RunSite`]: the window's stores as they are, then each
+/// of the `slots` records from `rbx` on marked as [`build_stub`] marks one,
+/// then back to `back`. The flags are not kept (the title sets them again
+/// before it reads them, as after the single stores).
+fn build_run_stub(window: &[u8], back: usize, to: usize, marks: usize, slots: u8) -> Option<Vec<u8>> {
+    let mut out = window.to_vec();
+    out.extend_from_slice(&[0x50, 0x52, 0x51]); // push rax; push rdx; push rcx
+    out.extend_from_slice(&[0x48, 0xba]); // mov rdx, marks
+    out.extend_from_slice(&(marks as u64).to_le_bytes());
+    for k in 0..slots {
+        out.extend_from_slice(&[0x48, 0x8d, 0x43, k.checked_mul(32)?]); // lea rax, [rbx + k*32]
+        out.extend_from_slice(&[0x48, 0x2b, 0x02]); // sub rax, [rdx] (start)
+        out.extend_from_slice(&[0x48, 0x3b, 0x42, 0x08]); // cmp rax, [rdx+8] (len)
+        out.extend_from_slice(&[0x73, 0x18]); // jae past the marks
+        out.extend_from_slice(&[0x48, 0xc1, 0xe8, 0x05]); // shr rax, 5
+        out.extend_from_slice(&[0x48, 0x8b, 0x4a, 0x10]); // mov rcx, [rdx+16] (slots)
+        out.extend_from_slice(&[0xc6, 0x04, 0x01, 0x01]); // mov byte [rcx+rax], 1
+        out.extend_from_slice(&[0x48, 0xc1, 0xe8, 0x07]); // shr rax, 7
+        out.extend_from_slice(&[0x48, 0x8b, 0x4a, 0x18]); // mov rcx, [rdx+24] (chunks)
+        out.extend_from_slice(&[0xc6, 0x04, 0x01, 0x01]); // mov byte [rcx+rax], 1
+    }
+    out.extend_from_slice(&[0x59, 0x5a, 0x58]); // pop rcx; pop rdx; pop rax
+    let jump = encode_rel32_jump(to + out.len(), back)?;
+    out.extend_from_slice(&jump);
+    Some(out)
+}
+
+/// Verifies and patches the [`RunSite`]s in the loaded title image, as
+/// [`apply`] does the single stores.
+///
+/// # Safety
+/// As for [`apply`].
+pub unsafe fn apply_runs(base: usize, size: usize, marks: usize, runs: &[RunSite]) -> Vec<Hooked> {
+    let mut out = Vec::new();
+    for run in runs {
+        let done = (|| {
+            if run.at.checked_add(run.len).is_none_or(|end| end > size) || run.len < 5 {
+                return Hooked::Failed("outside the image");
+            }
+            let at = base + run.at;
+            // SAFETY: inside the image.
+            let window = unsafe { std::slice::from_raw_parts(at as *const u8, run.len) };
+            if fnv1a(window) != run.fnv {
+                return Hooked::Differs;
+            }
+            let Some(to) = alloc_near(at, STUB_SLAB_LEN) else {
+                return Hooked::Failed("no executable room near the image");
+            };
+            let (Some(body), Some(jump)) =
+                (build_run_stub(window, at + run.len, to, marks, run.slots), encode_rel32_jump(at, to))
+            else {
+                return Hooked::Failed("rel32 out of range");
+            };
+            let mut old = 0u32;
+            // SAFETY: our fresh slab, then the verified window, before title threads start.
+            unsafe {
+                std::ptr::copy_nonoverlapping(body.as_ptr(), to as *mut u8, body.len());
+                if VirtualProtect(at as *const _, run.len, PAGE_EXECUTE_READWRITE, &mut old) == 0 {
+                    return Hooked::Failed("VirtualProtect failed");
+                }
+                std::ptr::write_bytes(at as *mut u8, 0x90, run.len);
+                std::ptr::copy_nonoverlapping(jump.as_ptr(), at as *mut u8, jump.len());
+                VirtualProtect(at as *const _, run.len, old, &mut old);
+                FlushInstructionCache(GetCurrentProcess(), at as *const _, run.len);
+                FlushInstructionCache(GetCurrentProcess(), to as *const _, body.len());
+            }
+            Hooked::Done
+        })();
+        tracing::info!(site = format_args!("{:#x}", run.at), ?done, "renderer port 2: run of descriptor stores");
+        out.push(done);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +427,16 @@ mod tests {
         assert!(lea_of(&[0xc5, 0xfc, 0x11, 0x44, 0x31, 0x08]).is_none());
         assert!(lea_of(&[0xc5, 0xfc, 0x11, 0x04, 0x24]).is_none());
         assert!(lea_of(&[0x90, 0x90, 0x90, 0x90, 0x90]).is_none());
+    }
+
+    #[test]
+    fn run_stub_keeps_the_stores_and_marks_each_record() {
+        let window = [0xc5, 0xfc, 0x11, 0x5b, 0x60, 0xc5, 0xfc, 0x11, 0x53, 0x40, 0xc5, 0xfc, 0x11, 0x4b, 0x20, 0xc5, 0xfc, 0x11, 0x03];
+        assert_eq!(fnv1a(&window), RUNS[0].fnv);
+        let stub = build_run_stub(&window, 0x7ff7_0000_1013, 0x7ff7_0010_0000, 0x1234_5678, 4).unwrap();
+        assert!(stub.starts_with(&window));
+        assert_eq!(stub.iter().filter(|&&b| b == 0x73).count() >= 4, true);
+        assert_eq!(stub[stub.len() - 5], 0xe9);
     }
 
     #[test]

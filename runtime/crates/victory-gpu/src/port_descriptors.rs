@@ -108,6 +108,8 @@ fn adopt_now(start: u64, count: u32) -> bool {
         chunks,
         writers,
     });
+    #[cfg(windows)]
+    start_trace(start as usize, count * 32);
     tracing::info!(
         start = format_args!("{start:#x}"),
         count,
@@ -464,6 +466,104 @@ pub(crate) fn line(frames: f64) {
             writers
         }
     );
+}
+
+/// Writers of the adopted heap found by protection (diagnostics,
+/// `VICTORY_PORT_DESCRIPTORS_TRACE=1` with the port on): once a second the
+/// heap is made read-only; the first write to each page faults, its
+/// instruction is counted ([`TRACED`]) and the page made writable again.
+/// Tells exactly which code writes slots, where the guard-fault notes of
+/// [`faulted`] only remember a block's last writer.
+#[cfg(windows)]
+fn trace_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PORT_DESCRIPTORS_TRACE").is_some_and(|v| v == "1"))
+}
+
+/// Instruction address -> page faults it took in the traced heap.
+#[cfg(windows)]
+static TRACED: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
+/// The traced range `[start, end)` while tracing (0, 0 otherwise).
+#[cfg(windows)]
+static TRACE_RANGE: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+
+#[cfg(windows)]
+fn start_trace(start: usize, len: usize) {
+    use windows_sys::Win32::Foundation::{EXCEPTION_ACCESS_VIOLATION, NTSTATUS};
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        AddVectoredExceptionHandler, EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+    };
+    use windows_sys::Win32::System::Memory::{PAGE_READONLY, PAGE_READWRITE, VirtualProtect};
+    if !trace_on() || TRACE_RANGE[1].load(Relaxed) != 0 {
+        return;
+    }
+    unsafe extern "system" fn on_write(info: *mut EXCEPTION_POINTERS) -> i32 {
+        // SAFETY: the system passes the exception being dispatched.
+        let r = unsafe { &*(*info).ExceptionRecord };
+        if r.ExceptionCode != EXCEPTION_ACCESS_VIOLATION as NTSTATUS
+            || r.NumberParameters < 2
+            || r.ExceptionInformation[0] != 1
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        let at = r.ExceptionInformation[1];
+        if at < TRACE_RANGE[0].load(Relaxed) || at >= TRACE_RANGE[1].load(Relaxed) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        let page = at & !0xfff;
+        let mut old = 0u32;
+        // SAFETY: a page of the traced heap, read-only by our hand.
+        unsafe { VirtualProtect(page as *const _, 0x1000, PAGE_READWRITE, &mut old) };
+        // Outside the title (a copy routine, ours or the system's): its
+        // caller too, the return address at the top of its stack (the
+        // copy routines keep no frame of their own).
+        let rip = r.ExceptionAddress as usize;
+        let (base, size) = (IMAGE[0].load(Relaxed), IMAGE[1].load(Relaxed));
+        // SAFETY: the faulting thread's context, given by the system.
+        let rsp = unsafe { (*(*info).ContextRecord).Rsp } as usize;
+        let caller = if rip >= base && rip < base + size {
+            0
+        } else {
+            // SAFETY: the top of the faulting thread's own stack.
+            unsafe { (rsp as *const usize).read() }
+        };
+        if let Ok(mut t) = TRACED.try_lock() {
+            *t.entry(rip).or_default() += 1;
+            if caller != 0 {
+                *t.entry(caller | 1 << 63).or_default() += 1;
+            }
+        }
+        EXCEPTION_CONTINUE_EXECUTION
+    }
+    TRACE_RANGE[0].store(start, Relaxed);
+    TRACE_RANGE[1].store(start + len, Relaxed);
+    // SAFETY: the handler only touches the traced heap's protection and a map.
+    unsafe { AddVectoredExceptionHandler(1, Some(on_write)) };
+    let _ = std::thread::Builder::new().name("victory-port2-trace".into()).spawn(move || {
+        let mut n = 0u64;
+        loop {
+            let mut old = 0u32;
+            // SAFETY: the adopted heap, kept mapped for the run.
+            unsafe { VirtualProtect(start as *const _, len, PAGE_READONLY, &mut old) };
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            n += 1;
+            if n % 10 == 0 {
+                let (base, size) = (IMAGE[0].load(Relaxed), IMAGE[1].load(Relaxed));
+                let mut all: Vec<(usize, u64)> = TRACED.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(a, n)| (*a, *n)).collect();
+                all.sort_by(|a, b| b.1.cmp(&a.1));
+                let top: Vec<String> = all
+                    .iter()
+                    .take(24)
+                    .map(|&(rip, n)| {
+                        let (called, rip) = (rip >> 63 == 1, rip & !(1 << 63));
+                        let at = if rip >= base && rip < base + size { format!("title+{:#x}", rip - base) } else { format!("{rip:#x}") };
+                        if called { format!("(called from {at}) {n}") } else { format!("{at} {n}") }
+                    })
+                    .collect();
+                tracing::info!("renderer port 2 trace (VICTORY_PORT_DESCRIPTORS_TRACE): writers of the view heap's pages since the start: {}", top.join(", "));
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -110,10 +110,13 @@ pub fn run(
         let size = image.info().size_of_image as usize;
         // SAFETY: the image stays mapped and no title thread has started; the marks are static.
         let done = unsafe { apply(image.base(), size, victory_hle::port_descriptors::marks_address(), &SITES) };
-        let patched = done.iter().filter(|d| **d == Hooked::Done).count();
-        println!("renderer port 2: {patched} of {} descriptor record stores patched", SITES.len());
+        // SAFETY: as above.
+        let runs = unsafe { victory_loader::descriptor_sites::apply_runs(image.base(), size, victory_hle::port_descriptors::marks_address(), &victory_loader::descriptor_sites::RUNS) };
+        let patched = done.iter().chain(&runs).filter(|d| **d == Hooked::Done).count();
+        let all = SITES.len() + runs.len();
+        println!("renderer port 2: {patched} of {all} descriptor record stores patched");
         if patched > 0 {
-            victory_hle::status::event(&format!("tanımlayıcı kancası: {patched}/{} yazma noktası yamalandı", SITES.len()));
+            victory_hle::status::event(&format!("tanımlayıcı kancası: {patched}/{all} yazma noktası yamalandı"));
         }
         victory_hle::port_descriptors::hooked(image.base(), size, patched);
     }
