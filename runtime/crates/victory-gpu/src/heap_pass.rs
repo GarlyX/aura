@@ -33,9 +33,10 @@ pub(crate) const ORPHANS_EVERY: u64 = 16;
 fn mode() -> u8 {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("VICTORY_HEAP_PASS_MARKED").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        // aura: on unless `=0` (off in tests, which expect the old way).
+        _ => u8::from(!cfg!(test)),
     })
 }
 

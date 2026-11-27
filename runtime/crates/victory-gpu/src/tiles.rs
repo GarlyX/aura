@@ -101,13 +101,16 @@ fn small_when_full_mb() -> u64 {
 const SMALL_TILES: u32 = 16;
 
 /// Whether textures are made this way: the switch
-/// (`VICTORY_LEVELS_ON_DEMAND=1`; off by default), and a card that reads
+/// (on by default in aura; `VICTORY_LEVELS_ON_DEMAND=0` off), and a card that reads
 /// zeros from, and drops writes to, levels without memory (tiled resources
 /// tier 2).
 pub(crate) fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        if !std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "1") {
+        // aura: on by default (`VICTORY_LEVELS_ON_DEMAND=0` off): on a 16 GB
+        // PC entering the world refreshed ~300 MB of texture memory a frame
+        // (port-run6); only the levels draws read are made and uploaded.
+        if std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "0") {
             return false;
         }
         let Some(host) = host() else {

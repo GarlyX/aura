@@ -102,6 +102,21 @@ pub fn run(
     }
     let exe_name = exe.file_name().unwrap_or_default().to_string_lossy();
     show(&exe_name, image.bind_imports(&with_dlls, policy)?);
+    // Renderer port #2 (VICTORY_PORT_DESCRIPTORS=1; off by default): the title's
+    // descriptor record stores mark the slots they write.
+    #[cfg(windows)]
+    if execute && victory_hle::port_descriptors::on() {
+        use victory_loader::descriptor_sites::{Hooked, SITES, apply};
+        let size = image.info().size_of_image as usize;
+        // SAFETY: the image stays mapped and no title thread has started; the marks are static.
+        let done = unsafe { apply(image.base(), size, victory_hle::port_descriptors::marks_address(), &SITES) };
+        let patched = done.iter().filter(|d| **d == Hooked::Done).count();
+        println!("renderer port 2: {patched} of {} descriptor record stores patched", SITES.len());
+        if patched > 0 {
+            victory_hle::status::event(&format!("tanımlayıcı kancası: {patched}/{} yazma noktası yamalandı", SITES.len()));
+        }
+        victory_hle::port_descriptors::hooked(image.base(), size, patched);
+    }
     if !execute {
         println!("not executing (pass --execute to start the title)");
         return Ok(());
@@ -140,6 +155,35 @@ pub fn run(
         let (rw, rh) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
         let why = if output.is_some() { "ekrana ya da VICTORY_OUTPUT'a göre" } else { "oyunun kendi ayarı" };
         victory_hle::status::event(&format!("çözünürlük: çıkış {w}x{h}, oyun {rw}x{rh} çiziyor ({why})"));
+        // The title's stall watchdog, off (VICTORY_WATCHDOG=1 keeps it).
+        // SAFETY: the image stays mapped and nothing of it has run yet.
+        let watchdog = unsafe { victory_loader::watchdog::apply(image.base(), image.info().size_of_image as usize) };
+        println!("watchdog: the title's stall watchdog {watchdog:?}");
+        if watchdog == victory_loader::resolution::Patched::Done {
+            victory_hle::status::event("oyunun takılma bekçisi kapatıldı (uzun yüklemelerde oyunu kendi kapatıyordu)");
+        }
+        // The frame rate (aura: 60 a second unless VICTORY_FRAME_INTERVAL_MS):
+        // our frame clock does not wait (victory-gpu), and the title is given
+        // no limit in place of its setting's 30 (VICTORY_TITLE_FPS overrides
+        // the rate given; `off` leaves the title's 30).
+        if let Some(ms) = victory_loader::frame_rate::asked_interval_ms() {
+            use victory_loader::frame_rate::{Patched, SITES, apply, title_rate};
+            let asked = std::env::var("VICTORY_TITLE_FPS").ok();
+            match title_rate(ms, asked.as_deref()) {
+                Some(rate) => {
+                    let size = image.info().size_of_image as usize;
+                    // SAFETY: the image stays mapped and nothing of it has run yet.
+                    let done = unsafe { apply(image.base(), size, rate, &SITES) };
+                    let patched = done.iter().filter(|d| **d == Patched::Done).count();
+                    println!("frame rate: our clock {ms} ms; the title's rate {rate} ({patched} of {} reads of its setting patched)", SITES.len());
+                    victory_hle::status::event(&format!(
+                        "kare hızı sınırı 30 yerine {rate} fps (oyunun ayarını okuyan {patched}/{} nokta yamalandı)",
+                        SITES.len()
+                    ));
+                }
+                None => println!("frame rate: our clock {ms} ms; the title's own rate (30) left as it is"),
+            }
+        }
         if matches!(console, Console::SeriesS) && std::env::var_os("VICTORY_UPSCALER").is_none() {
             victory_hle::status::event("Series S: oyunun kendi ölçekleyicisi kullanılıyor (FidelityFX yolu kartı düşürüyordu)");
         }

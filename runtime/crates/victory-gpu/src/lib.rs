@@ -34,6 +34,8 @@ pub mod device;
 #[cfg(windows)]
 mod drvwatch;
 #[cfg(windows)]
+mod compose;
+#[cfg(windows)]
 mod fpsbox;
 #[cfg(windows)]
 mod stats;
@@ -62,6 +64,7 @@ mod launch;
 pub mod list;
 pub mod object;
 pub mod pipeline;
+pub mod port_descriptors;
 #[cfg(windows)]
 mod plaincopy;
 #[cfg(windows)]
@@ -84,6 +87,8 @@ mod memory;
 mod shadow;
 #[cfg(windows)]
 mod tiles;
+#[cfg(windows)]
+mod ram;
 pub mod status;
 pub mod signature;
 #[cfg(windows)]

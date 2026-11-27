@@ -144,7 +144,7 @@ impl Batch {
     /// and handed over when it holds enough.
     pub(crate) fn uploaded(&mut self, bytes: u64) {
         self.bytes += bytes;
-        if self.bytes >= LIST_BYTES || self.began.elapsed().as_millis() >= LIST_MS {
+        if self.bytes >= (if crate::ram::small() { LIST_BYTES / 2 } else { LIST_BYTES }) || self.began.elapsed().as_millis() >= LIST_MS {
             self.flush();
         }
     }

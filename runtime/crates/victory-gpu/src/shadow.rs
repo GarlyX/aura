@@ -684,10 +684,13 @@ pub(crate) static PATCHED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// `VICTORY_PATCH_LEAN`: 0 off (the default), 1 on, 2 in turn (`alt`).
 pub(crate) fn patch_lean_mode() -> u8 {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    // aura: on by default (`VICTORY_PATCH_LEAN=0` off): without it the
+    // patch's buffer was made anew for every submission, 252 ms of card_before
+    // a world frame on a 16 GB PC (rebase-run3).
     *MODE.get_or_init(|| match std::env::var("VICTORY_PATCH_LEAN").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        _ => 1,
     })
 }
 

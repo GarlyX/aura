@@ -2351,7 +2351,7 @@ fn spare_most() -> u64 {
     static MOST: OnceLock<u64> = OnceLock::new();
     *MOST.get_or_init(|| {
         let mb = std::env::var("VICTORY_SCRATCH_SPARE_MB").ok();
-        mb.and_then(|v| v.trim().parse::<u64>().ok()).map_or(SPARE_MOST, |mb| mb << 20)
+        mb.and_then(|v| v.trim().parse::<u64>().ok()).map_or(if crate::ram::small() { 128 << 20 } else { SPARE_MOST }, |mb| mb << 20)
     })
 }
 
@@ -10086,6 +10086,8 @@ struct Presenter {
     ahead: Vec<(HostList, u64)>,
     hwnd: HWND,
     meter: Meter,
+    /// The pass that blends a second present plane, once one is presented.
+    compose: Option<crate::compose::Compose>,
 }
 
 /// The frame rate, shown in the window's caption every second and logged
@@ -10177,6 +10179,7 @@ impl Meter {
         }
         crate::shadow::exact_line(frames);
         crate::descriptor::sync_line(frames);
+        crate::port_descriptors::line(frames);
         late_line(frames);
         card_clock_line(frames, ms);
         crate::queue2::line(frames);
@@ -10448,14 +10451,26 @@ impl Host {
     /// Shows `texture`, which is in `state` (a host state) and stays in it,
     /// as frame `frame` (saved if captures are on). `None` if nothing was
     /// shown; else, in diagnostics builds, whether the frame was black.
-    pub(crate) fn present(&self, texture: &ID3D12Resource, state: u32, frame: u64) -> Option<bool> {
+    pub(crate) fn present(
+        &self,
+        texture: &ID3D12Resource,
+        state: u32,
+        interface: Option<(&ID3D12Resource, u32)>,
+        frame: u64,
+    ) -> Option<bool> {
         let showing = std::time::Instant::now();
-        let shown = self.present_now(texture, state, frame);
+        let shown = self.present_now(texture, state, interface, frame);
         crate::framelog::add(crate::framelog::T::PresentShowUs, showing.elapsed().as_micros() as u64);
         shown
     }
 
-    fn present_now(&self, texture: &ID3D12Resource, state: u32, frame: u64) -> Option<bool> {
+    fn present_now(
+        &self,
+        texture: &ID3D12Resource,
+        state: u32,
+        interface: Option<(&ID3D12Resource, u32)>,
+        frame: u64,
+    ) -> Option<bool> {
         // SAFETY: a live resource.
         let desc = unsafe { texture.GetDesc() };
         let Some(format) = swap_format(desc.Format) else {
@@ -10531,6 +10546,72 @@ impl Host {
             };
             copy.reset();
             let list = &copy.list;
+            static NO_COMPOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Some((overlay, overlay_state)) = interface
+                && !NO_COMPOSE.load(Ordering::Relaxed)
+            {
+                if p.compose.as_ref().is_none_or(|c| c.format() != p.format) {
+                    p.compose = match crate::compose::Compose::new(&self.device, p.format) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            NO_COMPOSE.store(true, Ordering::Relaxed);
+                            tracing::warn!(error = %e, "no pass to blend the second present plane; only the first is shown");
+                            None
+                        }
+                    };
+                }
+                if let Some(c) = p.compose.as_mut() {
+                    c.record(
+                        &self.device,
+                        list,
+                        &back,
+                        (p.width, p.height),
+                        texture,
+                        state.0 as u32,
+                        overlay,
+                        overlay_state,
+                    );
+                    // The frame rate into the corner of what is shown, as
+                    // with one plane (the box is a copy onto the back
+                    // buffer; the pass above leaves it in the present
+                    // state). Without it a Series S run had no corner box
+                    // and no load line in the log, where a Series X run of
+                    // the same build has both.
+                    list.ResourceBarrier(&[transition(
+                        &back,
+                        D3D12_RESOURCE_STATE_PRESENT,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                    )]);
+                    crate::fpsbox::draw(self, list, &back, (width, height, format));
+                    list.ResourceBarrier(&[transition(
+                        &back,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_PRESENT,
+                    )]);
+                    copy.close();
+                    match slot {
+                        Some(i) => {
+                            let flown = self.execute_own(copy);
+                            p.ahead[i].1 = flown;
+                        }
+                        None => self.execute(&[copy]),
+                    }
+                    // As with one plane: what Present answers is said once
+                    // if it is an error.
+                    let shown = p.swap_chain.Present(0, DXGI_PRESENT(0));
+                    if shown.is_err() {
+                        static ONCE: std::sync::Once = std::sync::Once::new();
+                        ONCE.call_once(|| {
+                            tracing::error!(
+                                "Present answered {:#010x} (said once): the first call to report it, frame {frame} (two planes)",
+                                shown.0 as u32
+                            );
+                        });
+                    }
+                    p.meter.frame(p.hwnd);
+                    return Some(false);
+                }
+            }
             list.ResourceBarrier(&[
                 transition(texture, state, D3D12_RESOURCE_STATE_COPY_SOURCE),
                 transition(
@@ -10632,6 +10713,7 @@ impl Host {
                 ahead: Vec::new(),
                 hwnd,
                 meter: Meter::new(),
+                compose: None,
             })
         }
     }

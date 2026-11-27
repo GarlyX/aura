@@ -104,9 +104,9 @@ fn present_behind() -> bool {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     let mode = *MODE.get_or_init(|| {
         let asked = match std::env::var("VICTORY_ASYNC_PRESENT").as_deref() {
-            Ok("1") => 1,
+            Ok("0") => 0,
             Ok("alt") => 2,
-            _ => 0,
+            _ => 1,
         };
         let mode = if asked != 0 && behind() && crate::host::late_free_present() { asked } else { 0 };
         if mode != 0 {
@@ -137,6 +137,10 @@ fn present_behind() -> bool {
 #[cfg(windows)]
 fn send_behind(this: This, planes: u32, plane_parameters: *const Plane) -> bool {
     if this.is_null() || planes == 0 || PRESENTS_HELD.load(Ordering::Relaxed) != 0 {
+        return false;
+    }
+    // Two planes are blended (`crate::compose`) by the present in line.
+    if planes > 1 && crate::compose::on() {
         return false;
     }
     let frame = FRAMES.load(Ordering::Relaxed) + 1;
@@ -493,7 +497,7 @@ pub(crate) fn release_held(all: bool) {
 pub(crate) fn behind() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let on = std::env::var_os("VICTORY_ASYNC_SUBMIT").is_some_and(|v| v == "1") && crate::host::late() && cuts();
+        let on = std::env::var_os("VICTORY_ASYNC_SUBMIT").is_none_or(|v| v != "0") && crate::host::late() && cuts();
         if on {
             tracing::info!("submissions are prepared and sent by a thread of ours, not by the thread that submits (VICTORY_ASYNC_SUBMIT=1)");
             let _ = std::thread::Builder::new().name("victory-submit".into()).spawn(worker);
@@ -585,9 +589,9 @@ fn join_parts() -> bool {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     let mode = *MODE.get_or_init(|| {
         let mode = match std::env::var("VICTORY_JOIN_PARTS").as_deref() {
-            Ok("1") => 1,
+            Ok("0") => 0,
             Ok("alt") => 2,
-            _ => 0,
+            _ => 1,
         };
         if mode != 0 {
             tracing::info!(
@@ -900,7 +904,7 @@ fn release_held_now(all: bool) {
                     Held::Present(texture, state, frame) => {
                         let show = || {
                             if let Some(host) = crate::host::host() {
-                                let _ = host.present(&texture, state, frame);
+                                let _ = host.present(&texture, state, None, frame);
                             }
                         };
                         if all {
@@ -1127,6 +1131,9 @@ pub(crate) struct Plane {
     count: u32,
     resources: *const This,
 }
+/// Bytes from one present plane's description to the next (as the Series
+/// S profile's two planes lie).
+const PLANE_STRIDE: usize = 72;
 /// Submission tagged with the frame it belongs to `(count, lists, frame
 /// token, flags)`; frames are paced elsewhere, so it runs as a plain one.
 extern "system" fn execute_x(this: This, count: u32, lists: *const This, _token: u64, _flags: u32) {
@@ -1415,10 +1422,35 @@ fn present_now(this: This, planes: u32, plane_parameters: *const Plane) -> HRESU
         && let Some(host) = crate::host::host()
     {
         const COPY_SOURCE: u32 = 0x800;
+        const PIXEL_SHADER_RESOURCE: u32 = 0x80;
+        // The second plane (the interface, with the Series S profile),
+        // blended over the first (`crate::compose`; after fxceless/
+        // victory-fork pull request #1081).
+        let interface = (planes > 1 && crate::compose::on())
+            // SAFETY: the title passes `planes` descriptions of PLANE_STRIDE bytes.
+            .then(|| unsafe { plane_parameters.cast::<u8>().add(PLANE_STRIDE).cast::<Plane>().as_ref() })
+            .flatten()
+            .filter(|p| p.count > 0 && !p.resources.is_null())
+            // SAFETY: the plane lists `count` resources.
+            .map(|p| unsafe { *p.resources })
+            .filter(|&r| r != resource)
+            .and_then(|r| crate::resource::host_resource(r).map(|t| (r, t)));
+        let interface_state = interface.map(|(r, _)| {
+            crate::resource::host_transition(r, PIXEL_SHADER_RESOURCE)
+                .map_or(PIXEL_SHADER_RESOURCE, |(_, before)| before)
+        });
         let state = crate::resource::host_transition(resource, COPY_SOURCE)
             .map_or(COPY_SOURCE, |(_, before)| before);
-        let shown = host.present(texture, state, frame);
+        let shown = host.present(
+            texture,
+            state,
+            interface.zip(interface_state).map(|((_, t), s)| (t, s)),
+            frame,
+        );
         crate::resource::host_transition(resource, state);
+        if let Some(((r, _), s)) = interface.zip(interface_state) {
+            crate::resource::host_transition(r, s);
+        }
         #[cfg(feature = "diagnostics")]
         blinks(frame, resource, state, shown);
         #[cfg(not(feature = "diagnostics"))]

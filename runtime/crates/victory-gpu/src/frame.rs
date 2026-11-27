@@ -39,6 +39,34 @@ fn clock() -> std::sync::MutexGuard<'static, Option<Clock>> {
     CLOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The interval of ours in place of the title's (aura): unset, 16.667 ms
+/// (60 a second in place of the title's 30); `VICTORY_FRAME_INTERVAL_MS=<ms>`
+/// that interval (0: no wait at all); `=title` the title's own (30 a second). Read once. The loader
+/// gives the title the matching frame rate (`victory_loader::frame_rate`),
+/// as it would otherwise keep to its 30 with a limiter of its own.
+fn asked() -> Option<Duration> {
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
+    {
+        static ASKED: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+        *ASKED.get_or_init(|| {
+            let asked = match std::env::var("VICTORY_FRAME_INTERVAL_MS") {
+                Err(_) => Some(Duration::from_micros(16_667)),
+                Ok(v) if v.trim().eq_ignore_ascii_case("title") => None,
+                Ok(v) => v
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|ms| ms.is_finite() && (0.0..=1000.0).contains(ms))
+                    .map(|ms| Duration::from_nanos((ms * 1e6).round() as u64)),
+            };
+            tracing::info!(?asked, "frame interval of ours in place of the title's (VICTORY_FRAME_INTERVAL_MS; none: no cap)");
+            asked
+        })
+    }
+}
+
 /// Device method: a frame every `length` microseconds. The period is how
 /// many intervals a frame may take to reach the display (pipeline depth),
 /// not part of the rate.
@@ -49,11 +77,12 @@ pub(crate) extern "system" fn set_interval(
     _period: u32,
     _flags: u32,
 ) -> HRESULT {
-    let interval = match length {
+    let by_title = match length {
         0 => SIXTIETH,
         us => Duration::from_micros(u64::from(us)),
     };
-    tracing::info!(?interval, "frame interval");
+    let interval = asked().unwrap_or(by_title);
+    tracing::info!(?interval, title = ?by_title, "frame interval");
     // A new interval starts from now, after the last tick handed out.
     let first = LAST
         .iter()
@@ -99,9 +128,14 @@ fn next_tick(kind: u32) -> (u64, Duration) {
     let mut clock = clock();
     let c = clock.get_or_insert_with(|| Clock {
         start: Instant::now(),
-        interval: SIXTIETH,
+        interval: asked().unwrap_or(SIXTIETH),
         first: 0,
     });
+    if c.interval.is_zero() {
+        // No wait: every wait ends at once, on a tick of its own.
+        let tick = last(kind).load(Ordering::Relaxed) + 1;
+        return (tick, Duration::ZERO);
+    }
     let elapsed = c.start.elapsed().as_nanos();
     let interval = c.interval.as_nanos().max(1);
     let tick =

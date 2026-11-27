@@ -32,16 +32,19 @@ use std::sync::OnceLock;
 use victory_formats::texture::Layout;
 use windows::Win32::Graphics::Direct3D12::*;
 
-/// `VICTORY_GPU_DETILE`: 0 (unset) off; 1 on; `alt` twenty seconds with,
+/// `VICTORY_GPU_DETILE`: 0 off; 1 (unset, aura) on; `alt` twenty seconds with,
 /// twenty without, in turn, each change said in the log. Asked when a
 /// texture's staging is made: a texture keeps the way it was made with.
 pub(crate) fn on() -> bool {
     /// 0 off, 1 on, 2 in turn.
     static MODE: OnceLock<u8> = OnceLock::new();
+    // aura: on by default (`VICTORY_GPU_DETILE=0` off): entering the world
+    // the PC detiled ~1,000 textures a frame on the submitting thread, 1.3
+    // to 5.6 s a frame, while the card stood 97 % idle (port-run5-clean).
     match *MODE.get_or_init(|| match std::env::var("VICTORY_GPU_DETILE").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("alt") => 2,
-        _ => 0,
+        _ => 1,
     }) {
         0 => false,
         1 => true,
