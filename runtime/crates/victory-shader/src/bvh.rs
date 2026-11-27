@@ -127,10 +127,7 @@ pub fn intersect(words: &[u32; 28], kind: u32, ray: &Ray, sort: bool) -> [u32; 4
         4 => boxes(&children(words), &boxes16(words), ray, sort),
         5 => boxes(&children(words), &boxes32(words), ray, sort),
         k @ 0..=3 => triangle(&triangle_vertices(words, k), ray).map(f32::to_bits),
-        // An instance or a procedural node: the hardware answers -1 in all
-        // four dwords (AMD GPURT IntersectCommon.hlsl: "User defined node.
-        // HW returns -1"); the traversal handles the node itself.
-        _ => [u32::MAX; 4],
+        _ => MISS.map(f32::to_bits),
     }
 }
 
@@ -653,13 +650,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn instances_and_procedural_nodes_return_all_ones() {
-        // As the hardware (AMD GPURT IntersectCommon.hlsl: "User defined
-        // node. HW returns -1"): the traversal handles such a node itself.
+    fn instances_and_procedural_nodes_return_a_triangle_miss() {
         let node = triangles(&TRIANGLE, 9);
         let ray = Ray::new([0.0; 3], [0.0, 0.0, 1.0], 100.0);
         for k in [6, 7] {
-            assert_eq!(intersect(&node, k, &ray, true), [u32::MAX; 4]);
+            assert_eq!(intersect(&node, k, &ray, true), MISS.map(f32::to_bits));
         }
     }
 
