@@ -660,6 +660,20 @@ fn wake_decoder() {
             std::thread::Builder::new()
                 .name("victory XMA decoder".into())
                 .spawn(|| {
+                    // The rings the title reads are a few 256-byte blocks
+                    // (2.7 ms each at 48 kHz mono): a decoder kept off the
+                    // processor for some 10 ms by our busy GPU threads let
+                    // them run dry and the sound dropped out (dozens of
+                    // gaps in a 2.5-minute intro). So it runs above them;
+                    // `VICTORY_XMA_PRIORITY=0` leaves it at normal.
+                    #[cfg(windows)]
+                    if std::env::var_os("VICTORY_XMA_PRIORITY").is_none_or(|v| v != "0") {
+                        use windows_sys::Win32::System::Threading::{
+                            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+                        };
+                        // SAFETY: the calling thread's own pseudo handle.
+                        unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
+                    }
                     loop {
                         xma().pump();
                         // A 256-byte output block lasts 2.7 ms at 48 kHz mono.

@@ -26,6 +26,7 @@ pub mod budget;
 mod console_insn;
 mod crash;
 pub mod prepare;
+pub mod resolution;
 pub mod resolve;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod stacks;
