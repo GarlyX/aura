@@ -54,15 +54,53 @@ pub enum Patched {
 /// Sizes the title has a display mode for (its own list, +0x615c0c0).
 pub const MODES: [(u32, u32); 5] = [(1280, 720), (1664, 936), (1920, 1080), (2560, 1440), (3840, 2160)];
 
-/// `VICTORY_OUTPUT=<w>x<h>`: one of [`MODES`]. `None` if unset or not one
-/// (said why).
+/// The output size: `VICTORY_OUTPUT=<w>x<h>` (one of [`MODES`]), or
+/// `native` for the title's own (its settings, 3840x2160 as a Series X wrote
+/// them); unset, the largest of [`MODES`] that fits the PC's main screen
+/// (a 1080p screen: 1920x1080, rendered at 1280x720 by the title's 2/3),
+/// none on a 4K screen. `None`: the title's own size.
 pub fn asked_output() -> Option<(u32, u32)> {
-    let spec = std::env::var("VICTORY_OUTPUT").ok()?;
-    let size = parse_output(&spec);
-    if size.is_none() {
-        eprintln!("VIctory: VICTORY_OUTPUT={spec}: expected one of the title's modes: 1920x1080, 2560x1440, 1280x720, 1664x936, 3840x2160");
+    match std::env::var("VICTORY_OUTPUT") {
+        Ok(spec) if spec.trim().eq_ignore_ascii_case("native") => None,
+        Ok(spec) => {
+            let size = parse_output(&spec);
+            if size.is_none() {
+                eprintln!("VIctory: VICTORY_OUTPUT={spec}: expected native or one of the title's modes: 1920x1080, 2560x1440, 1280x720, 1664x936, 3840x2160");
+            }
+            size
+        }
+        Err(_) => screen_size().and_then(fitting_mode),
     }
-    size
+}
+
+/// The largest of the title's modes no larger than `screen`; `None` when
+/// that is its own 3840x2160 (nothing to change).
+pub fn fitting_mode(screen: (u32, u32)) -> Option<(u32, u32)> {
+    let fit = MODES
+        .iter()
+        .copied()
+        .filter(|&(w, h)| w <= screen.0 && h <= screen.1)
+        .max_by_key(|&(w, h)| u64::from(w) * u64::from(h))
+        .unwrap_or(MODES[0]);
+    (fit != (3840, 2160)).then_some(fit)
+}
+
+/// The PC's main screen in pixels: its current mode, whatever the scaling
+/// of the desktop (a process that is not DPI-aware is told a scaled size).
+#[cfg(windows)]
+fn screen_size() -> Option<(u32, u32)> {
+    use windows_sys::Win32::Graphics::Gdi::{DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW};
+    // SAFETY: a plain C structure, all zeros valid.
+    let mut mode: DEVMODEW = unsafe { std::mem::zeroed() };
+    mode.dmSize = size_of::<DEVMODEW>() as u16;
+    // SAFETY: the primary display (null name) and a sized structure.
+    let ok = unsafe { EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, &mut mode) } != 0;
+    (ok && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0).then_some((mode.dmPelsWidth, mode.dmPelsHeight))
+}
+
+#[cfg(not(windows))]
+fn screen_size() -> Option<(u32, u32)> {
+    None
 }
 
 pub fn parse_output(spec: &str) -> Option<(u32, u32)> {
@@ -306,16 +344,22 @@ pub unsafe fn write(base: usize, size: usize, site: &Site, code: &[u8]) -> Patch
 /// # Safety
 /// The image of `size` bytes at `base` stays mapped and no thread runs its
 /// code yet.
+/// Returns the output size set (`None`: the title's own) and the render
+/// scale set (`None`: the title's own 2/3), each only if its site was
+/// changed.
 #[cfg(windows)]
-pub unsafe fn apply_asked(base: usize, size: usize) {
+pub unsafe fn apply_asked(base: usize, size: usize) -> (Option<(u32, u32)>, Option<f32>) {
     let mut asked: Vec<(&Site, Vec<u8>, String)> = Vec::new();
-    if let Some((w, h)) = asked_output() {
+    let output = asked_output();
+    let scale = asked_render_scale();
+    let mut set = (None, None);
+    if let Some((w, h)) = output {
         asked.push((&OUTPUT, output_code(w, h), format!("{w}x{h}")));
         if (w, h) != (3840, 2160) {
             asked.push((&POOL_CHECK, pool_check_code(), format!("{w}x{h}")));
         }
     }
-    if let Some(s) = asked_render_scale() {
+    if let Some(s) = scale {
         asked.push((&OWN_SCALE, own_scale_code(s), format!("{s}")));
     }
     if let Some(s) = asked_ffx_scale() {
@@ -334,12 +378,31 @@ pub unsafe fn apply_asked(base: usize, size: usize) {
             Patched::Failed(why) => tracing::warn!(site = %offset, what = site.what, why, "resolution: not patched"),
         }
         println!("resolution: {} ({value}) at title+{offset}: {done:?}", site.what);
+        if done == Patched::Done {
+            if std::ptr::eq(site, &OUTPUT) {
+                set.0 = output;
+            } else if std::ptr::eq(site, &OWN_SCALE) {
+                set.1 = scale;
+            }
+        }
     }
+    set
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_output_fits_the_screen() {
+        assert_eq!(fitting_mode((1920, 1080)), Some((1920, 1080)));
+        assert_eq!(fitting_mode((2560, 1440)), Some((2560, 1440)));
+        assert_eq!(fitting_mode((1920, 1200)), Some((1920, 1080)));
+        assert_eq!(fitting_mode((1366, 768)), Some((1280, 720)));
+        assert_eq!(fitting_mode((1024, 600)), Some((1280, 720)), "the smallest mode at least");
+        assert_eq!(fitting_mode((3840, 2160)), None, "the title's own size");
+        assert_eq!(fitting_mode((5120, 2880)), None);
+    }
 
     #[test]
     fn switches_parse() {

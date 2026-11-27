@@ -114,7 +114,10 @@ pub fn run(
         let size = image.info().size_of_image as usize;
         // SAFETY: the image stays mapped and nothing of it has run yet.
         match unsafe { apply(image.base(), size, asked) } {
-            Outcome::Done { total_mib } => println!("budget         {asked:?}: the title's pools now total {total_mib} MiB"),
+            Outcome::Done { total_mib } => {
+                println!("budget         {asked:?}: the title's pools now total {total_mib} MiB");
+                victory_hle::status::event(&format!("bütçe: oyunun havuzları {total_mib} MiB"));
+            }
             Outcome::Unknown => println!("budget         {asked:?} asked, but the pool table is not the known one: left alone"),
             Outcome::Off => {}
         }
@@ -123,7 +126,15 @@ pub fn run(
     // VICTORY_FFX_SCALE, VICTORY_UPSCALER; each off without it), in the mapped
     // image only.
     // SAFETY: the image stays mapped and nothing of it has run yet.
-    unsafe { victory_loader::resolution::apply_asked(image.base(), image.info().size_of_image as usize) };
+    let (output, scale) =
+        unsafe { victory_loader::resolution::apply_asked(image.base(), image.info().size_of_image as usize) };
+    {
+        let (w, h) = output.unwrap_or((3840, 2160));
+        let s = scale.unwrap_or(2.0 / 3.0);
+        let (rw, rh) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
+        let why = if output.is_some() { "ekrana ya da VICTORY_OUTPUT'a göre" } else { "oyunun kendi ayarı" };
+        victory_hle::status::event(&format!("çözünürlük: çıkış {w}x{h}, oyun {rw}x{rh} çiziyor ({why})"));
+    }
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
     victory_hle::runtime::use_console_timers();
@@ -140,12 +151,17 @@ pub fn run(
     victory_hle::runtime::set_title_dll_loader(Box::new(move |file| {
         late.load(file, show).map_err(|e| format!("{e:#}"))
     }));
+    victory_hle::status::event(&format!(
+        "oyun başlatılıyor ({}); durum satırı 5 sn'de bir (VICTORY_STATUS)",
+        victory_hle::console::current().name()
+    ));
     // SAFETY: imports are bound; from here on we run title code.
     let main = unsafe { Arc::new(image).spawn_main(dlls)? };
     let code = main
         .join()
         .map_err(|_| anyhow::anyhow!("title main thread panicked"))??;
     println!("title exited with {code}");
+    victory_hle::status::event(&format!("oyun kapandı (çıkış kodu {code})"));
     Ok(())
 }
 
